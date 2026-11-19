@@ -1,0 +1,23 @@
+[Unit]
+Description=livepush - Bilibili live monitor with QQ push
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/livepush
+Environment=LIVEPUSH_HOST=127.0.0.1
+Environment=LIVEPUSH_PORT=8787
+Environment=LIVEPUSH_DATA_DIR=/home/%i/livepush/data
+ExecStart=/home/%i/livepush/.venv/bin/python -m livepush run
+Restart=on-failure
+RestartSec=5
+# 子进程（签名服务 / 协议端）要跟着一起退出，否则会残留占用端口
+KillMode=control-group
+TimeoutStopSec=20
+StandardOutput=append:/home/%i/livepush/data/logs/service.log
+StandardError=append:/home/%i/livepush/data/logs/service.log
+
+[Install]
+WantedBy=multi-user.target

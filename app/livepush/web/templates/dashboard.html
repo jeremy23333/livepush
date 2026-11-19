@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>总览</h1>
+  <div class="spacer"></div>
+  <button class="small" id="btn-check">立即检查</button>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<div class="panel" id="risk-panel" hidden>
+  <h2>采集异常</h2>
+  <p class="hint" id="risk-text"></p>
+</div>
+
+<div class="panel">
+  <h2>QQ 连接</h2>
+  <div id="bots"></div>
+</div>
+
+<div class="panel">
+  <h2>最近事件</h2>
+  <ul class="timeline" id="events"></ul>
+</div>
+{% endblock %}

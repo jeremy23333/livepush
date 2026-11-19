@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>推送日志</h1>
+  <div class="spacer"></div>
+  <select id="log-filter" class="fixed" style="min-width:140px">
+    <option value="jobs">推送任务</option>
+    <option value="events">事件</option>
+  </select>
+  <button class="small" id="btn-refresh">刷新</button>
+</div>
+
+<div class="panel">
+  <div id="log-body"></div>
+</div>
+{% endblock %}

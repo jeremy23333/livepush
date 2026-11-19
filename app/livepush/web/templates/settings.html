@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>设置</h1>
+  <div class="spacer"></div>
+  <button class="small" id="btn-doctor">环境自检</button>
+</div>
+
+<div class="panel">
+  <h2>轮询与风控</h2>
+  <div class="grid2">
+    <label class="field"><span>有在播时间隔（秒）</span><input type="number" data-cfg="poll_interval_live"></label>
+    <label class="field"><span>全部离线时间隔（秒）</span><input type="number" data-cfg="poll_interval_idle"></label>
+    <label class="field"><span>夜间时间隔（秒）</span><input type="number" data-cfg="poll_interval_night"></label>
+    <label class="field"><span>夜间起（小时）</span><input type="number" data-cfg="night_start_hour"></label>
+    <label class="field"><span>夜间止（小时）</span><input type="number" data-cfg="night_end_hour"></label>
+    <label class="field"><span>抖动比例（0~1）</span><input type="number" step="0.05" data-cfg="jitter_ratio"></label>
+    <label class="field"><span>批量大小（≤100）</span><input type="number" data-cfg="chunk_size"></label>
+    <label class="field"><span>批间隔（毫秒）</span><input type="number" data-cfg="chunk_delay_ms"></label>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>状态判定</h2>
+  <div class="grid2">
+    <label class="field"><span>开播确认次数</span><input type="number" data-cfg="on_confirm_polls"></label>
+    <label class="field"><span>下播确认次数</span><input type="number" data-cfg="off_confirm_polls"></label>
+    <label class="field"><span>标题变更去抖（秒）</span><input type="number" data-cfg="title_debounce_sec"></label>
+    <label class="field"><span>同类事件最小间隔（秒）</span><input type="number" data-cfg="min_event_interval_sec"></label>
+    <label class="field"><span>过期事件跳过（小时）</span><input type="number" data-cfg="max_event_age_hours"></label>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>推送样式</h2>
+  <div class="grid2">
+    <label class="field"><span>封面图发送方式</span>
+      <select data-cfg="cover_mode">
+        <option value="base64">base64（推荐，绕开防盗链）</option>
+        <option value="url">直接发 URL</option>
+        <option value="off">不发图</option>
+      </select>
+    </label>
+    <label class="field" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" data-cfg="at_all_default" style="width:auto"> <span style="margin:0">新建绑定时默认 @全体</span>
+    </label>
+  </div>
+  <label class="field"><span>开播文案</span><textarea data-cfg="template_live_on"></textarea></label>
+  <label class="field"><span>下播文案</span><textarea data-cfg="template_live_off"></textarea></label>
+  <label class="field"><span>标题变更文案</span><textarea data-cfg="template_title_change"></textarea></label>
+  <p class="hint">可用占位符：{uname} {title} {area} {url} {duration} {online} {room_id} {uid} {prev_title}</p>
+</div>
+
+<div class="panel">
+  <h2>B 站访问</h2>
+  <label class="field"><span>Cookie（SESSDATA，可选，能显著降低风控概率）</span><input data-cfg="bili_cookie" placeholder="SESSDATA=xxx; bili_jct=xxx"></label>
+  <label class="field"><span>代理（可选，如 http://127.0.0.1:7890）</span><input data-cfg="bili_proxy"></label>
+</div>
+
+<div class="row" style="margin-bottom:16px">
+  <button class="primary fixed" id="btn-save-settings">保存设置</button>
+</div>
+
+<div class="panel">
+  <h2>签名服务器</h2>
+  <p class="hint">
+    只有「内置 Milky（Yogurt / Lagrange.Milky）」才需要签名。自建签名服务<strong>不需要 Token</strong>；
+    填 Token 是给远程/官方签名服务用的。
+  </p>
+  <div class="grid2">
+    <label class="field"><span>签名服务地址</span><input id="sign-url" placeholder="http://127.0.0.1:8080/"></label>
+    <label class="field"><span>Token（自建留空）</span><input id="sign-token"></label>
+    <label class="field"><span>代理（可选）</span><input id="sign-proxy"></label>
+    <label class="field"><span>协议版本（fetched 或具体版本号）</span><input id="sign-version" placeholder="fetched"></label>
+  </div>
+  <div class="row">
+    <button class="fixed" id="btn-sign-save">保存签名配置</button>
+    <button class="fixed" id="btn-sign-check">签名体检</button>
+    <button class="fixed" id="btn-sign-start">启动自建签名</button>
+    <button class="fixed" id="btn-sign-stop">停止</button>
+  </div>
+  <div id="sign-result" style="margin-top:12px"></div>
+  <div id="sign-log" style="margin-top:12px" hidden>
+    <pre class="log" id="sign-log-text"></pre>
+  </div>
+</div>
+
+<div class="panel" id="doctor-panel" hidden>
+  <h2>环境自检</h2>
+  <div id="doctor-result"></div>
+</div>
+{% endblock %}

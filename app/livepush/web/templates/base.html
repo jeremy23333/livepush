@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ active }} · livepush</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="{{ active }}">
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">livepush<small>B站直播 → QQ 推送</small></div>
+    <nav class="nav">
+      <a href="/" class="{{ 'active' if active == 'dashboard' else '' }}">总览</a>
+      <a href="/qq" class="{{ 'active' if active == 'qq' else '' }}">QQ 账号与登录</a>
+      <a href="/rooms" class="{{ 'active' if active == 'rooms' else '' }}">直播间</a>
+      <a href="/targets" class="{{ 'active' if active == 'targets' else '' }}">推送目标</a>
+      <a href="/bindings" class="{{ 'active' if active == 'bindings' else '' }}">绑定关系</a>
+      <a href="/logs" class="{{ 'active' if active == 'logs' else '' }}">推送日志</a>
+      <a href="/settings" class="{{ 'active' if active == 'settings' else '' }}">设置</a>
+    </nav>
+  </aside>
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+</div>
+<div class="toast-wrap" id="toasts"></div>
+<script src="/static/app.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

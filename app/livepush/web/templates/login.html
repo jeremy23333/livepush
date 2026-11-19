@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · livepush</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="login">
+<div class="login-wrap">
+  <form class="login-card" id="login-form">
+    <h1>livepush</h1>
+    <p>B 站直播监控 + QQ 推送。请输入管理员口令。</p>
+    <label class="field">
+      <span>管理员口令</span>
+      <input type="password" id="password" autocomplete="current-password" autofocus>
+    </label>
+    <button class="primary" style="width:100%" type="submit">进入</button>
+    <p class="hint">口令在 <code>data/admin-password.txt</code>，也可用 <code>LIVEPUSH_ADMIN_PASSWORD</code> 指定。</p>
+  </form>
+</div>
+<div class="toast-wrap" id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

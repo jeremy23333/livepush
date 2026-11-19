@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>绑定关系</h1>
+  <div class="spacer"></div>
+  <button class="small" id="btn-refresh">刷新</button>
+</div>
+
+<div class="panel">
+  <h2>直播间 × 推送目标</h2>
+  <p class="hint">
+    点亮表示这一对会推送。点单元格可编辑细则（开播/下播/标题变更、@全体、带封面图、自定义开播文案）。
+    深色点 = 已绑定但全部通知都关了。
+  </p>
+  <div id="matrix" style="overflow:auto"></div>
+</div>
+{% endblock %}

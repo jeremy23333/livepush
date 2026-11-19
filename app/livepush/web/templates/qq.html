@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>QQ 账号与登录</h1>
+  <div class="spacer"></div>
+  <button class="small" id="btn-refresh">刷新</button>
+</div>
+
+<div class="panel">
+  <h2>新增连接</h2>
+  <div class="steps" id="wizard-steps">
+    <span class="step active" data-step="1">1 选方式</span>
+    <span class="step" data-step="2">2 填参数</span>
+  </div>
+  <div class="grid2">
+    <label class="field"><span>连接方式</span>
+      <select id="b-mode">
+        <option value="builtin">内置协议端（我们拉起 Milky，网页扫码，需签名）</option>
+        <option value="hosted">托管第三方 NTQQ（Docker 一键装 NapCat / SnowLuma，免签名）</option>
+        <option value="external">外接已有协议端</option>
+      </select>
+    </label>
+    <label class="field" id="wrap-backend" hidden><span>内置协议端</span>
+      <select id="b-backend">
+        <option value="yogurt">Yogurt（Milky，需签名）</option>
+        <option value="lagrange_milky">Lagrange.Milky（Milky，需签名）</option>
+      </select>
+    </label>
+    <label class="field" id="wrap-hosted-backend" hidden><span>托管后端</span>
+      <select id="b-hosted-backend">
+        <option value="napcat">NapCat（Docker，网页扫码）</option>
+        <option value="snowluma">SnowLuma（Docker，自带 WebUI + 远程桌面）</option>
+      </select>
+    </label>
+    <label class="field"><span>协议</span>
+      <select id="b-transport">
+        <option value="milky">Milky</option>
+        <option value="onebot11">OneBot 11</option>
+      </select>
+    </label>
+    <label class="field" id="wrap-uin"><span>QQ 号（内置 / 托管模式必填）</span><input id="b-uin" placeholder="例如 123456789"></label>
+    <label class="field" id="wrap-api" hidden><span>Milky API 地址</span><input id="b-api" placeholder="http://127.0.0.1:3000"></label>
+    <label class="field" id="wrap-ws" hidden><span>OneBot WS 地址</span><input id="b-ws" placeholder="ws://127.0.0.1:3001"></label>
+    <label class="field"><span>Token（可留空，内置 / 托管模式会自动生成）</span><input id="b-token"></label>
+    <label class="field"><span>备注名</span><input id="b-name" placeholder="例如 推送小号"></label>
+  </div>
+  <div class="row">
+    <button class="primary fixed" id="btn-add-bot">创建连接</button>
+  </div>
+  <p class="hint" style="margin-top:10px">
+    <strong>托管</strong>：在本机用 Docker 装 NapCat / SnowLuma，免签名；创建后点「托管」按提示装镜像、起容器、扫码。
+    镜像约 600–740 MB，首次安装要等下载。<br>
+    <strong>免签外接</strong>：用「外接 + OneBot 11」接已有的 LLBot / waylay 等协议端，只填 WS 地址即可。
+  </p>
+</div>
+
+<div class="panel">
+  <h2>已有连接</h2>
+  <div id="bots"></div>
+</div>
+{% endblock %}

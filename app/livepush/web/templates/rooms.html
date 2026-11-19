@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>直播间</h1>
+  <div class="spacer"></div>
+  <button class="small" id="btn-refresh">刷新</button>
+</div>
+
+<div class="panel">
+  <h2>添加直播间</h2>
+  <p class="hint">支持 UID、房间号、短号、`live.bilibili.com/xxx` 链接。先预览再确认，避免加错人。</p>
+  <div class="row">
+    <input id="add-query" placeholder="例如 672328094 或 https://live.bilibili.com/22637261">
+    <label class="fixed small" style="display:flex;align-items:center;gap:6px;min-width:auto">
+      <input type="checkbox" id="add-notify" style="width:auto"> 正在直播则立即推送
+    </label>
+    <button class="fixed primary" id="btn-resolve">解析</button>
+  </div>
+  <div id="preview" style="margin-top:12px" hidden></div>
+</div>
+
+<div class="panel">
+  <h2>已关注</h2>
+  <div id="rooms"></div>
+</div>
+{% endblock %}

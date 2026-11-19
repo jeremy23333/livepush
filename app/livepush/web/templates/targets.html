@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>推送目标</h1>
+  <div class="spacer"></div>
+  <button class="small" id="btn-import">从机器人导入群</button>
+</div>
+
+<div class="panel">
+  <h2>手动添加</h2>
+  <div class="row">
+    <select id="t-bot" class="fixed" style="min-width:180px"></select>
+    <select id="t-kind" class="fixed" style="min-width:110px">
+      <option value="group">群聊</option>
+      <option value="private">私聊</option>
+    </select>
+    <input id="t-id" placeholder="群号 / QQ 号">
+    <input id="t-name" placeholder="备注名（可选）">
+    <button class="fixed primary" id="btn-add-target">添加</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>已有目标</h2>
+  <div id="targets"></div>
+</div>
+{% endblock %}

@@ -1,0 +1,87 @@
+# =========================================================
+# livepush — Git 忽略规则
+# 原则：源码/文档/部署脚本/测试 入库；运行期数据、密钥、构建产物 不入库
+# 注意：改动本文件后，已跟踪的文件不会被自动取消跟踪，需 git rm -r --cached
+# =========================================================
+
+# ---------- Python 运行时与构建产物 ----------
+__pycache__/
+*.py[cod]
+*.pyo
+*$py.class
+*.so
+*.pyd
+.venv/
+venv/
+env/
+ENV/
+.eggs/
+*.egg
+*.egg-info/
+build/
+dist/
+*.whl
+
+# ---------- 工作区里的临时目录（pip/pytest 沙箱残留、探测脚本产物） ----------
+.tmp/
+tmp*/
+pip-*/
+pytest-*/
+# 手工探测留下的单文件产物（如 app/probe2.txt），确认无用后可直接删除
+probe*.txt
+
+# ---------- 测试与静态检查缓存 ----------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# ---------- 运行期数据：数据库 / 封面 / 日志 / 协议端工作目录 / 宿主组件 ----------
+# 全部由 app/livepush/config.py 在首次启动时自动创建，无需入库
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite3
+*.log
+logs/
+
+# ---------- 密钥、口令、会话凭据（绝不能入库） ----------
+secret.key
+admin-password.txt
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.cookies
+cookies*.json
+
+# ---------- 本机打包与备份产物 ----------
+# RESTORE.md 是恢复文档，需要入库；压缩包与校验和属于本机产物
+backups/*
+!backups/RESTORE.md
+dist/*
+livepush.tar.gz
+*.tar.gz
+*.tgz
+*.zip
+
+# ---------- 编辑器 / 操作系统杂项 ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
