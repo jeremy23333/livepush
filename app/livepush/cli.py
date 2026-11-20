@@ -301,6 +301,10 @@ def _run(host: str | None, port: int | None, reload: bool) -> int:
 
     Runtime.load()
     settings = runtime.settings
+    from .util.logretention import truncate_service_log
+
+    # service.log 由 systemd 直接 append，没有轮转；每次启动先截断，避免无限增长
+    truncate_service_log(settings.logs_dir / "service.log", 32)
     uvicorn.run(
         "livepush.main:create_app",
         factory=True,
@@ -380,6 +384,71 @@ async def _hosted(cmd: str, bot_id: int | None = None) -> int:
         await dispose_engine()
 
 
+async def _logs(action: str = "list", dry_run: bool = False) -> int:
+    Runtime.load()
+    settings = runtime.settings
+    from .util.logretention import cleanup_logs, list_log_files
+
+    if action == "list":
+        rows = list_log_files(settings.logs_dir)
+        if not rows:
+            _safe_print(f"{settings.logs_dir} 下还没有日志文件。")
+            return 0
+        _safe_print(f"日志目录：{settings.logs_dir}")
+        for row in rows:
+            mark = "（活动文件，不删）" if row["protected"] else ""
+            _safe_print(
+                f"  {row['name']:<34} {row['size'] / 1024:>9.1f} KB  "
+                f"{row['age_days']:>6.1f} 天  {row['area']}{mark}"
+            )
+        return 0
+
+    from .appconfig import load_app_config
+    from .db import dispose_engine, init_engine, init_schema, session_scope
+
+    await init_engine(settings.db_url)
+    await init_schema()
+    try:
+        async with session_scope() as session:
+            config = await load_app_config(session)
+        if config.log_retention_days <= 0:
+            _safe_print("已关闭自动清理（设置里的「日志保留天数」为 0）。")
+            return 0
+        report = cleanup_logs(
+            config.log_retention_days, logs_dir=settings.logs_dir, dry_run=dry_run
+        )
+        for name in report["deleted"]:
+            _safe_print(f"  {'将删除' if dry_run else '已删除'} {name}")
+        for name in report["errors"]:
+            _safe_print(f"  失败 {name}")
+        _safe_print(
+            f"{'预演' if dry_run else '完成'}：删除 {len(report['deleted'])} 个，"
+            f"释放 {report['freed_bytes'] / 1024:.1f} KB，保留 {report['kept']} 个"
+            f"（保留天数 {report['days']}）"
+        )
+        return 0
+    finally:
+        await dispose_engine()
+
+
+async def _bili(query: str) -> int:
+    Runtime.load()
+    from .bili.client import BiliClient
+
+    client = BiliClient(covers_dir=runtime.settings.covers_dir)
+    try:
+        result = await client.diagnose(query)
+    finally:
+        await client.aclose()
+    _safe_print(f"输入：{query}")
+    for step in result["steps"]:
+        flag = "OK  " if step["ok"] else "FAIL"
+        detail = step.get("detail") or ""
+        _safe_print(f"  [{flag}] {step['name']:<16} {step['ms']:>6} ms  {detail}")
+    _safe_print("结论：" + result["summary"])
+    return 0 if result["ok"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="livepush", description="B 站直播监控 + QQ 推送")
     sub = parser.add_subparsers(dest="cmd")
@@ -396,6 +465,13 @@ def main(argv: list[str] | None = None) -> int:
     hosted_p = sub.add_parser("hosted", help="托管协议端（NapCat / SnowLuma 容器）")
     hosted_p.add_argument("action", choices=["list", "install", "start", "stop", "logs"])
     hosted_p.add_argument("bot_id", nargs="?", type=int, default=None)
+
+    logs_p = sub.add_parser("logs", help="查看日志文件 / 按保留天数清理")
+    logs_p.add_argument("action", choices=["list", "cleanup"], nargs="?", default="list")
+    logs_p.add_argument("--dry-run", action="store_true", help="只显示会删哪些，不真的删")
+
+    bili_p = sub.add_parser("bili", help="诊断一个直播间输入（链接/短号/UID）")
+    bili_p.add_argument("query")
 
     args = parser.parse_args(argv)
     if args.cmd in (None, "run"):
@@ -416,6 +492,10 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_json())
     if args.cmd == "hosted":
         return asyncio.run(_hosted(args.action, args.bot_id))
+    if args.cmd == "logs":
+        return asyncio.run(_logs(args.action, args.dry_run))
+    if args.cmd == "bili":
+        return asyncio.run(_bili(args.query))
     parser.print_help()
     return 2
 

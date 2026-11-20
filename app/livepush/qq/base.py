@@ -69,3 +69,14 @@ class BotClient(ABC):
 
     async def get_at_all_remain(self, group_id: str) -> dict | None:
         return None
+
+    def health(self) -> dict:
+        """运行健康态（掉线探测用）。子类可覆盖补充心跳、事件时间等细节。"""
+        return {
+            "transport": self.transport,
+            "state": self.state,
+            "connected": self.connected,
+            "self_id": self.self_id,
+            "nickname": self.nickname,
+            "last_error": self.last_error,
+        }

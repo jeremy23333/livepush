@@ -1,5 +1,41 @@
 # 变更记录
 
+## 2.1.0（2026-11-20）
+
+主题：**可观测性与运维**——实时日志、故障告警、日志自动清理、QQ 掉线探测、绑定级测试推送、内嵌托管 WebUI，外加 502 错误定位与直播时长精度。
+
+### 新增
+
+- **首页实时日志**：`LogBuffer` 环形缓冲（1000 条）+ `GET /api/logs`、`GET /api/logs/stream?cursor=&level=`（SSE）；总览页可**按等级、按功能分区**筛选，支持暂停/清空。
+- **企业微信故障告警**（`app/livepush/alerts.py`）：把 `WARNING/ERROR` 以上日志推到群机器人 webhook；同一类错误按「logger + 归一化消息」冷却（默认 10 分钟）、每分钟硬上限（默认 10 条）、`msgtype=markdown`；设置页可「发送测试告警」，接口 `GET /api/alerts/state`、`POST /api/alerts/test`。
+- **日志自动清理**（`app/livepush/util/logretention.py`）：设置里配「保留 N 天」（`log_retention_days`，默认 14，0 关闭）、每天几点跑（`log_cleanup_hour`）、`service.log` 启动截断大小（`log_service_truncate_mb`）；只删过期的一层 `*.log*`，**`app.log`/`service.log` 永不删**。设置页有文件清单与「立即清理」，CLI 为 `python -m livepush logs list|cleanup [--dry-run]`。
+- **QQ 掉线探测**（`app/livepush/qq/watchdog.py`）：30 秒一轮，综合真实往返（`get_login_info`）、心跳年龄与 `status.good`、下线 notice、托管容器状态与容器日志关键词；连续异常超过宽限期才告警，**只告警不自动重启**。健康状态挂到 `GET /api/bots` 的 `health`。
+- **绑定级测试推送**：`POST /api/subscriptions/{id}/test-push`，按真实模板渲染该绑定的开播/下播消息（强制不带 @全体），末尾标注「测试消息」；5 秒限流，不写事件与任务表。绑定弹窗里可直接点。
+- **内嵌托管 WebUI**：`/hosted/{bot_id}` 用 iframe 打开 NapCat WebUI，`/hosted/{bot_id}/webui/*` 做 HTTP + WebSocket 反向代理，HTML 注入 `<base>` 与 fetch/XHR/WS/EventSource 重写 shim，复用 livepush 登录态。经 Cloudflare Tunnel 访问时不再需要额外端口。
+- **B 站诊断**：`python -m livepush bili <房间号/链接>` 与 `GET /api/diag/bili?query=`，按「解析 → DNS → HTTP 接口 → 批量状态 → 房间详情」逐步给 OK/FAIL 与耗时。
+- **模板占位符 `{live_started}`**：下播消息里可写开播时刻。
+
+### 改进
+
+- **添加直播间的 502**：`BiliError` 增加 `stage`；`room_init` 的 `-404/-400` 正确转成 404「没有这个直播间」；`/rooms`、`/rooms/resolve` 失败会写 `livepush.api` 日志（带 traceback），页面显示可读的阶段与业务码；`/api/diag/bili` 可一键定位。
+- **B 站客户端**：`trust_env=False`（不再被系统 `HTTP_PROXY` 环境干扰，只用设置里的 `bili_proxy`）；连接/读超时拆开并重试一次；DNS 走 `asyncio.to_thread` 不阻塞事件循环。
+- **直播时长**：下播时长改以「第一次观测到下播候选」的时刻为终点（不再多算一个轮询周期）；直播中若 B 站 `live_time` 与本地记录差超过 60 秒会校准；开播时刻不会取未来值。
+
+### 修复
+
+- `alerts.normalize()` 会把十六进制偏移里的 `0` 也归一（`0x6856284` → `#x#`），导致偏移不同被当成同一类错误；改为占位符保护。
+- `alerts.configure()` 对纯空白 webhook 地址仍判为启用。
+- 反向代理 `_inject()` 把注入的 `<base>` 自己又重写一遍，导致 WebUI 资源路径重复。
+
+### 文档
+
+- 新增 [`docs/OPERATIONS.md`](OPERATIONS.md)：日志清单与功能分区、保留策略、告警配置、掉线探测判据、内嵌 WebUI、502 排查。
+- `docs/DEPLOY-ubuntu.md` 增补日志保留、告警、诊断、内嵌 WebUI 与验收项。
+
+### 兼容性
+
+- 配置项都有默认值，旧 `app_config` 缺字段时自动补齐；数据库无结构变化。
+
 ## 2.0.0（2026-11-19）
 
 主题：**把第三方 NTQQ 协议端变成一键可用的托管后端**，并修正签名与登录判定的老问题。

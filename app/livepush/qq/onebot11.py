@@ -9,6 +9,7 @@ import asyncio
 import itertools
 import json
 import logging
+import time
 from typing import Any
 
 import websockets
@@ -46,6 +47,9 @@ class OneBot11Client(BotClient):
         self._send_lock = asyncio.Lock()
         self._backoff = 1.0
         self.last_event_at = 0
+        self.last_heartbeat_at = 0
+        self.heartbeat_status: dict = {}
+        self.last_notice: dict = {}
         self._ready = asyncio.Event()
 
     # ------------------------------------------------------------------ 连接
@@ -124,12 +128,39 @@ class OneBot11Client(BotClient):
             if not future.done():
                 future.set_result(payload)
             return
-        # 事件：目前只需保持连接与心跳
+        # 事件：心跳与上下线通知是掉线探测的主要依据
         post_type = payload.get("post_type")
         if post_type == "meta_event":
-            import time as _time
+            now = int(time.time())
+            self.last_event_at = now
+            if payload.get("meta_event_type") == "heartbeat":
+                self.last_heartbeat_at = now
+                status = payload.get("status")
+                self.heartbeat_status = status if isinstance(status, dict) else {}
+        elif post_type == "notice":
+            self.last_notice = {
+                "notice_type": payload.get("notice_type", ""),
+                "sub_type": payload.get("sub_type", ""),
+                "user_id": payload.get("user_id", 0),
+                "time": payload.get("time", 0),
+            }
 
-            self.last_event_at = int(_time.time())
+    def health(self) -> dict:
+        now = int(time.time())
+        payload = super().health()
+        status = self.heartbeat_status or {}
+        payload.update(
+            {
+                "last_event_at": self.last_event_at,
+                "last_heartbeat_at": self.last_heartbeat_at,
+                "heartbeat_age": now - self.last_heartbeat_at if self.last_heartbeat_at else None,
+                "heartbeat_interval": status.get("interval"),
+                "heartbeat_online": status.get("online"),
+                "heartbeat_good": status.get("good"),
+                "last_notice": dict(self.last_notice),
+            }
+        )
+        return payload
 
     def _fail_pending(self, reason: str) -> None:
         for echo, future in list(self._pending.items()):

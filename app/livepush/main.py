@@ -25,7 +25,11 @@ from .qq.hosted import hosted_manager
 from .qq.login import login_manager
 from .qq.sign_server import sign_server
 from .util.logging import setup_logging
+from .util.logretention import setup_retention, truncate_service_log
+from .alerts import alert_manager, configure_alerts, install_alerts
+from .qq.watchdog import watchdog
 from .web import routes_api, routes_pages, sse
+from .web import proxy as web_proxy
 from .web.deps import STATIC_DIR
 
 log = logging.getLogger("livepush")
@@ -93,6 +97,20 @@ async def lifespan(app: FastAPI):
 
     await init_engine(settings.db_url)
     await init_schema()
+
+    from .appconfig import load_app_config
+
+    async with session_scope() as session:
+        boot_config = await load_app_config(session)
+    truncate_service_log(settings.logs_dir / "service.log", boot_config.log_service_truncate_mb)
+    retention = setup_retention(settings.logs_dir)
+    await retention.load_state()
+    await retention.start()
+
+    configure_alerts(boot_config)
+    install_alerts(alert_manager)
+    alert_manager.start()
+
     engine = MonitorEngine(settings.covers_dir)
     dispatcher = Dispatcher(settings.covers_dir)
     state.set_services(engine, dispatcher)
@@ -112,6 +130,7 @@ async def lifespan(app: FastAPI):
     await _connect_external_bots()
     await _resume_builtin_bots()
     await hosted_manager.resume_all()
+    watchdog.start()
     log.info("livepush 已就绪：http://%s:%s", settings.host, settings.port)
 
     try:
@@ -122,6 +141,10 @@ async def lifespan(app: FastAPI):
             await bridge_task
         except (asyncio.CancelledError, Exception):
             pass
+        await retention.stop()
+        await alert_manager.stop()
+        await watchdog.stop()
+        await web_proxy.close_client()
         await login_manager.stop_all()
         await hosted_manager.stop_all()
         await registry.manager.stop_all()
@@ -140,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_api.router)
     app.include_router(sse.router)
     app.include_router(routes_pages.router)
+    app.include_router(web_proxy.router)
 
     @app.get("/healthz")
     async def healthz() -> dict:

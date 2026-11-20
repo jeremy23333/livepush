@@ -48,13 +48,65 @@
   <label class="field"><span>开播文案</span><textarea data-cfg="template_live_on"></textarea></label>
   <label class="field"><span>下播文案</span><textarea data-cfg="template_live_off"></textarea></label>
   <label class="field"><span>标题变更文案</span><textarea data-cfg="template_title_change"></textarea></label>
-  <p class="hint">可用占位符：{uname} {title} {area} {url} {duration} {online} {room_id} {uid} {prev_title}</p>
+  <p class="hint">可用占位符：{uname} {title} {area} {url} {duration} {live_started} {online} {room_id} {uid} {prev_title}</p>
 </div>
 
 <div class="panel">
   <h2>B 站访问</h2>
   <label class="field"><span>Cookie（SESSDATA，可选，能显著降低风控概率）</span><input data-cfg="bili_cookie" placeholder="SESSDATA=xxx; bili_jct=xxx"></label>
   <label class="field"><span>代理（可选，如 http://127.0.0.1:7890）</span><input data-cfg="bili_proxy"></label>
+</div>
+
+<div class="panel">
+  <h2>日志与清理</h2>
+  <div class="grid2">
+    <label class="field"><span>保留天数（0 = 不自动清理）</span><input type="number" data-cfg="log_retention_days"></label>
+    <label class="field"><span>每天几点清理（0~23）</span><input type="number" data-cfg="log_cleanup_hour"></label>
+    <label class="field"><span>service.log 启动时截断（MB）</span><input type="number" data-cfg="log_service_truncate_mb"></label>
+  </div>
+  <p class="hint">
+    只删「子进程日志 / 轮转出来的旧文件」；<code>app.log</code> 与 <code>service.log</code> 是活动文件，永远保留。
+    每天按上面设置的时间自动清理一次，服务启动时也会跑一次。
+  </p>
+  <div id="log-files" style="margin-top:8px"></div>
+  <div class="row" style="margin-top:8px">
+    <button class="small" id="btn-cleanup-logs">立即清理（按保留天数）</button>
+    <button class="small" id="btn-refresh-logs">刷新文件列表</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>故障告警（企业微信群机器人）</h2>
+  <div class="grid2">
+    <label class="field" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" data-cfg="alert_enabled" style="width:auto"> <span style="margin:0">启用告警</span>
+    </label>
+    <label class="field"><span>最低等级</span>
+      <select data-cfg="alert_min_level">
+        <option value="WARNING">WARNING</option>
+        <option value="ERROR">ERROR</option>
+        <option value="CRITICAL">CRITICAL</option>
+      </select>
+    </label>
+    <label class="field"><span>同类告警冷却（秒）</span><input type="number" data-cfg="alert_cooldown_sec"></label>
+    <label class="field"><span>每分钟最多推送（条）</span><input type="number" data-cfg="alert_max_per_minute"></label>
+  </div>
+  <label class="field"><span>企业微信 webhook 地址</span><input data-cfg="alert_wecom_url" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."></label>
+  <p class="hint">同一类报错（模块 + 抹掉数字后的文案）在冷却期内只推一次；超过每分钟上限的直接丢弃并计数。</p>
+  <div class="row" style="margin-top:8px">
+    <button class="small" id="btn-alert-test">发送测试告警</button>
+    <span class="small muted" id="alert-state"></span>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>QQ 掉线探测</h2>
+  <div class="grid2">
+    <label class="field"><span>探测间隔（秒）</span><input type="number" data-cfg="bot_health_interval_sec"></label>
+    <label class="field"><span>连续异常多久才告警（秒）</span><input type="number" data-cfg="bot_offline_grace_sec"></label>
+    <label class="field"><span>心跳 good=false 连续次数</span><input type="number" data-cfg="bot_good_fail_threshold"></label>
+  </div>
+  <p class="hint">被风控踢下线时协议端往往不断开连接，所以看门狗同时看：连接态、心跳、真实往返、下线通知、容器状态与容器日志关键词。</p>
 </div>
 
 <div class="row" style="margin-bottom:16px">

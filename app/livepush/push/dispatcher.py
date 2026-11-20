@@ -204,6 +204,7 @@ class Dispatcher:
             area=snapshot.get("area") or "",
             url=snapshot.get("url") or "",
             duration=ctx["duration"] or int(snapshot.get("duration") or 0),
+            live_started_at=int(snapshot.get("live_started_at") or 0),
             online=int(snapshot.get("online") or 0),
             room_id=int(snapshot.get("room_id") or 0),
             uid=int(snapshot.get("uid") or 0),

@@ -155,6 +155,89 @@ pages.dashboard = async () => {
   await load();
   setInterval(load, 5000);
 
+  // ---------------------------------------------------------------- 实时日志
+  const logBox = document.getElementById('live-log');
+  const levelSel = document.getElementById('log-level');
+  const areaSel = document.getElementById('log-area');
+  const MAX_LINES = 300;
+  let logLines = [];
+  let logCursor = 0;
+  let logPaused = false;
+  let logStream = null;
+
+  const levelColor = (level) =>
+    (level === 'ERROR' || level === 'CRITICAL') ? '#ff6b6b' : (level === 'WARNING' ? '#f0b429' : '#8b95a7');
+
+  const renderLog = () => {
+    if (!logBox) return;
+    const area = areaSel.value;
+    const shown = logLines.filter((l) => !area || l.area === area).slice(-MAX_LINES);
+    logBox.textContent = '';
+    for (const line of shown) {
+      const el = document.createElement('div');
+      el.style.color = levelColor(line.level);
+      el.textContent = `${line.time} ${String(line.level).padEnd(7)} ${line.area} ${line.message}`;
+      logBox.appendChild(el);
+    }
+    logBox.scrollTop = logBox.scrollHeight;
+  };
+
+  const appendLog = (items) => {
+    if (logPaused || !items || !items.length) return;
+    for (const item of items) {
+      logLines.push(item);
+      if (item.seq > logCursor) logCursor = item.seq;
+    }
+    if (logLines.length > 1200) logLines = logLines.slice(-800);
+    renderLog();
+  };
+
+  const connectLogStream = () => {
+    if (logStream) logStream.close();
+    const level = encodeURIComponent(levelSel.value);
+    logStream = new EventSource(`/api/logs/stream?cursor=${logCursor}&level=${level}`);
+    logStream.addEventListener('message', (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type === 'log') appendLog(data.lines);
+      } catch (e) { /* 忽略单条解析失败 */ }
+    });
+  };
+
+  try {
+    const first = await LP.api('/api/logs?limit=300');
+    logLines = first.lines || [];
+    logCursor = first.seq || 0;
+    (first.areas || []).forEach((area) => {
+      const opt = document.createElement('option');
+      opt.value = area;
+      opt.textContent = area;
+      areaSel.appendChild(opt);
+    });
+    renderLog();
+    connectLogStream();
+  } catch (e) { /* 日志面板不是关键路径 */ }
+
+  levelSel?.addEventListener('change', async () => {
+    try {
+      const d = await LP.api(`/api/logs?limit=300&level=${encodeURIComponent(levelSel.value)}`);
+      logLines = d.lines || [];
+      logCursor = d.seq || 0;
+      renderLog();
+      connectLogStream();
+    } catch (e) { /* 忽略 */ }
+  });
+  areaSel?.addEventListener('change', renderLog);
+  document.getElementById('btn-log-pause')?.addEventListener('click', (ev) => {
+    logPaused = !logPaused;
+    ev.target.textContent = logPaused ? '继续' : '暂停';
+    if (!logPaused) connectLogStream();
+  });
+  document.getElementById('btn-log-clear')?.addEventListener('click', () => {
+    logLines = [];
+    renderLog();
+  });
+
   document.getElementById('btn-check').addEventListener('click', async () => {
     await LP.api('/api/check', { method: 'POST' });
     LP.toast('已安排立即检查', 'ok');
@@ -392,7 +475,14 @@ pages.bindings = async () => {
       <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="e-title" style="width:auto" ${existing.notify_title_change ? 'checked' : ''}><span style="margin:0">标题变更通知</span></label>
       <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="e-at" style="width:auto" ${existing.at_all ? 'checked' : ''}><span style="margin:0">开播时 @全体成员</span></label>
       <label class="field" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="e-cover" style="width:auto" ${existing.include_cover ? 'checked' : ''}><span style="margin:0">带封面图</span></label>
-      <label class="field"><span>自定义开播文案（留空用全局模板）</span><textarea id="e-tpl">${LP.esc(existing.message_template || '')}</textarea></label>`);
+      <label class="field"><span>自定义开播文案（留空用全局模板）</span><textarea id="e-tpl">${LP.esc(existing.message_template || '')}</textarea></label>${existing.id ? `
+      <label class="field"><span>测试推送的类型</span>
+        <select id="e-test-kind">
+          <option value="live_on">开播消息</option>
+          <option value="live_off">下播消息</option>
+        </select>
+      </label>
+      <p class="hint">测试消息按真实格式渲染并标注「测试」，不会写进事件/推送记录。</p>` : ''}`);
 
     const save = async () => {
       await LP.api('/api/bindings', {
@@ -415,6 +505,21 @@ pages.bindings = async () => {
     };
 
     const actions = [{ label: '取消' }, { label: '保存', cls: 'primary', onClick: save }];
+    if (existing.id) {
+      actions.unshift({
+        label: '发测试推送', onClick: async () => {
+          const kind = document.getElementById('e-test-kind')?.value || 'live_on';
+          try {
+            const r = await LP.api(`/api/subscriptions/${existing.id}/test-push`, {
+              method: 'POST',
+              body: { kind },
+            });
+            LP.toast(r.ok ? '测试消息已发往该目标' : `发送失败：${r.error || '未知错误'}`, r.ok ? 'ok' : 'err');
+          } catch (e) { /* LP.api 已提示 */ }
+          return false;
+        },
+      });
+    }
     if (existing.id) {
       actions.push({
         label: '解除绑定', cls: 'danger', onClick: async () => {
@@ -557,6 +662,49 @@ pages.settings = async () => {
   document.getElementById('btn-sign-start').addEventListener('click', () => signAction('/api/sign/server/start', '已启动'));
   document.getElementById('btn-sign-stop').addEventListener('click', () => signAction('/api/sign/server/stop', '已停止'));
 
+  const renderLogs = async () => {
+    const box = document.getElementById('log-files');
+    if (!box) return;
+    try {
+      const d = await LP.api('/api/logs/files');
+      if (!d.files.length) {
+        box.innerHTML = '<span class="muted">还没有日志文件</span>';
+        return;
+      }
+      box.innerHTML = `<div class="small muted">目录：${LP.esc(d.dir)}</div>` + d.files.map((f) =>
+        `<div class="small">${LP.esc(f.name)} · ${(f.size / 1024).toFixed(1)} KB · ${Number(f.age_days).toFixed(1)} 天 · ${LP.esc(f.area)}${f.protected ? ' · 活动文件' : ''}</div>`
+      ).join('');
+    } catch (e) {
+      box.innerHTML = '<span class="muted">读取失败</span>';
+    }
+  };
+
+  document.getElementById('btn-refresh-logs')?.addEventListener('click', renderLogs);
+  document.getElementById('btn-cleanup-logs')?.addEventListener('click', async () => {
+    try {
+      const d = await LP.api('/api/logs/cleanup', { method: 'POST' });
+      const r = d.report;
+      LP.toast(`删除 ${r.deleted.length} 个，释放 ${(r.freed_bytes / 1024).toFixed(1)} KB`, 'ok');
+      await renderLogs();
+    } catch (e) { /* 已提示 */ }
+  });
+
+  const alertStateText = (s) => {
+    document.getElementById('alert-state').textContent =
+      `已发送 ${s.sent} · 被抑制 ${s.suppressed} · 队列 ${s.queued}${s.last_error ? ' · 最近错误：' + s.last_error : ''}`;
+  };
+  const loadAlertState = async () => {
+    try {
+      const d = await LP.api('/api/alerts/state');
+      alertStateText(d.state);
+    } catch (e) { /* 忽略 */ }
+  };
+  document.getElementById('btn-alert-test')?.addEventListener('click', async () => {
+    const d = await LP.api('/api/alerts/test', { method: 'POST' });
+    LP.toast(d.ok ? '测试告警已发出' : (d.error || '发送失败'), d.ok ? 'ok' : 'err');
+    await loadAlertState();
+  });
+
   document.getElementById('btn-doctor').addEventListener('click', async () => {
     const panel = document.getElementById('doctor-panel');
     const box = document.getElementById('doctor-result');
@@ -571,6 +719,8 @@ pages.settings = async () => {
   });
 
   await load();
+  await renderLogs();
+  await loadAlertState();
 };
 
 /* ------------------------------------------------------------------ QQ 连接 */
@@ -738,7 +888,7 @@ pages.qq = async () => {
             <div><div class="small muted">镜像</div><div class="mono small">${LP.esc(s.image_ref || '-')}</div></div>
             <div><div class="small muted">工作目录</div><div class="mono small">${LP.esc(s.install_dir || '-')}</div></div>
           </div>
-          ${s.webui_url ? `<p>WebUI：<a href="${s.webui_url}" target="_blank" rel="noreferrer">${LP.esc(s.webui_url)}</a></p>` : ''}
+          ${s.webui_url ? `<p>WebUI：<a href="${s.webui_url}" target="_blank" rel="noreferrer">${LP.esc(s.webui_url)}</a>　·　<a href="/hosted/${botId}" target="_blank" rel="noreferrer">在 livepush 内打开</a></p>` : ''}
           ${s.remote_url ? `<p>远程桌面：<a href="${s.remote_url}" target="_blank" rel="noreferrer">${LP.esc(s.remote_url)}</a></p>` : ''}
           <p class="small muted">OneBot WS：<span class="mono">${LP.esc(s.ws_url || '-')}</span>　Token：<span class="mono">${LP.esc(s.token || '-')}</span></p>
           <div id="hosted-progress">${job && !job.done ? `<div class="card"><div class="small">${LP.esc(job.message)} ${job.total ? pct + '%' : ''}</div></div>` : ''}</div>

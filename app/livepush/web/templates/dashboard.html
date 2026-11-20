@@ -22,4 +22,25 @@
   <h2>最近事件</h2>
   <ul class="timeline" id="events"></ul>
 </div>
+
+<div class="panel">
+  <div class="row" style="justify-content:space-between;align-items:center">
+    <h2 style="margin:0">实时日志</h2>
+    <div class="row" style="gap:8px;align-items:center">
+      <select id="log-level" class="small">
+        <option value="">全部等级</option>
+        <option value="INFO">INFO 及以上</option>
+        <option value="WARNING">WARNING 及以上</option>
+        <option value="ERROR">ERROR 及以上</option>
+      </select>
+      <select id="log-area" class="small">
+        <option value="">全部分区</option>
+      </select>
+      <button class="small" id="btn-log-pause">暂停</button>
+      <button class="small" id="btn-log-clear">清空</button>
+    </div>
+  </div>
+  <p class="hint">内存里只保留最近 1000 条；暂停只影响滚动，不影响服务端日志落盘。</p>
+  <pre class="log" id="live-log" style="max-height:420px;overflow:auto"></pre>
+</div>
 {% endblock %}

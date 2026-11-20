@@ -175,3 +175,49 @@ def test_bindings_flow(client: TestClient):
 
     assert client.delete(f"/api/bindings/{binding_id}", headers=headers).status_code == 200
     assert client.get("/api/bindings").json()["bindings"] == []
+
+
+def test_new_ops_endpoints_require_auth(client: TestClient):
+    for path in (
+        "/api/logs",
+        "/api/logs/files",
+        "/api/alerts/state",
+        "/api/diag/bili?query=1",
+        "/api/hosted/backends",
+    ):
+        assert client.get(path).status_code == 401, path
+
+
+def test_logs_cleanup_requires_csrf(client: TestClient):
+    login(client)
+    assert client.post("/api/logs/cleanup").status_code == 403
+
+
+def test_logs_endpoints_smoke(client: TestClient):
+    login(client)
+    headers = {"X-LP": "1"}
+
+    data = client.get("/api/logs?limit=10").json()
+    assert data["ok"] is True
+    assert isinstance(data["lines"], list)
+    assert isinstance(data["areas"], list)
+
+    files = client.get("/api/logs/files").json()
+    assert files["ok"] is True
+    assert isinstance(files["files"], list)
+
+    report = client.post("/api/logs/cleanup", headers=headers).json()
+    assert report["ok"] is True
+    assert report["report"]["days"] >= 0
+
+
+def test_alerts_state_and_test_without_config(client: TestClient):
+    login(client)
+    headers = {"X-LP": "1"}
+
+    state = client.get("/api/alerts/state").json()["state"]
+    assert state["enabled"] is False
+
+    result = client.post("/api/alerts/test", headers=headers).json()
+    assert result["ok"] is False
+    assert "webhook" in result["error"]

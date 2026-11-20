@@ -33,6 +33,11 @@ def setup_logging(level: str = "INFO", log_file: Path | None = None) -> None:
     for noisy in ("httpx", "httpcore", "websockets", "uvicorn.access"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
+    # Web UI 的实时日志面板从内存缓冲读（与文件/控制台并存）
+    from .logbuf import install as install_buffer
+
+    install_buffer(level=root.level)
+
 
 def child_logger(name: str, log_path: Path):
     """为受管子进程单独建一个 logger（写自己的文件，不污染主日志）。"""

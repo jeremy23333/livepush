@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from ..appconfig import AppConfig
 from ..qq.message import Message
-from ..util.timefmt import fmt_duration
+from ..util.timefmt import fmt_dt, fmt_duration
 
 DEFAULT_TEMPLATES = {
     "live_on": "{uname} 开播啦！\n分区：{area}\n标题：{title}\n{url}",
@@ -37,6 +37,7 @@ class RenderInput:
     area: str = ""
     url: str = ""
     duration: int = 0
+    live_started_at: int = 0
     online: int = 0
     room_id: int = 0
     uid: int = 0
@@ -64,6 +65,9 @@ def build_message(data: RenderInput, config: AppConfig, cover_uri: str | None) -
             "url": data.url,
             "duration": fmt_duration(data.duration),
             "duration_sec": data.duration,
+            "live_started": fmt_dt(data.live_started_at, with_date=False)
+            if data.live_started_at
+            else "",
             "online": data.online,
             "room_id": data.room_id,
             "uid": data.uid,

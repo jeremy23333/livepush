@@ -45,6 +45,23 @@ class AppConfig:
     bili_cookie: str = ""
     bili_proxy: str = ""
 
+    # 日志保留
+    log_retention_days: int = 14  # 0 = 不自动删除
+    log_cleanup_hour: int = 4  # 每天几点执行清理（本地时区）
+    log_service_truncate_mb: int = 32  # service.log 无轮转，启动时超限截断
+
+    # 企业微信告警
+    alert_enabled: bool = False
+    alert_wecom_url: str = ""
+    alert_min_level: str = "ERROR"
+    alert_cooldown_sec: int = 600
+    alert_max_per_minute: int = 10
+
+    # QQ 掉线探测
+    bot_health_interval_sec: int = 30
+    bot_offline_grace_sec: int = 120
+    bot_good_fail_threshold: int = 2
+
     # 模板
     template_live_on: str = "{uname} 开播啦！\n分区：{area}\n标题：{title}\n{url}"
     template_live_off: str = "{uname} 下播了\n本次直播时长 {duration}"
@@ -67,6 +84,16 @@ class AppConfig:
         self.jitter_ratio = max(0.0, min(float(self.jitter_ratio), 1.0))
         if self.cover_mode not in ("base64", "url", "off"):
             self.cover_mode = "base64"
+        self.log_retention_days = max(0, min(int(self.log_retention_days), 365))
+        self.log_cleanup_hour = max(0, min(int(self.log_cleanup_hour), 23))
+        self.log_service_truncate_mb = max(1, min(int(self.log_service_truncate_mb), 1024))
+        if self.alert_min_level not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+            self.alert_min_level = "ERROR"
+        self.alert_cooldown_sec = max(60, min(int(self.alert_cooldown_sec), 86400))
+        self.alert_max_per_minute = max(1, min(int(self.alert_max_per_minute), 20))
+        self.bot_health_interval_sec = max(10, min(int(self.bot_health_interval_sec), 300))
+        self.bot_offline_grace_sec = max(30, min(int(self.bot_offline_grace_sec), 3600))
+        self.bot_good_fail_threshold = max(1, min(int(self.bot_good_fail_threshold), 10))
         return self
 
     def interval_for(self, any_live: bool, hour: int) -> int:

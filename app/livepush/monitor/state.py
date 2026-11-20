@@ -26,6 +26,7 @@ class RoomState:
     live_started_at: int = 0
     pending_status: int | None = None
     pending_count: int = 0
+    pending_since: int = 0  # 本轮「待确认状态」第一次被观测到的时刻
     title: str = ""
     area_name: str = ""
     notify_on_add: bool = False
@@ -44,6 +45,7 @@ class Decision:
     room_state: str
     events: list[EventKind] = field(default_factory=list)
     duration: int = 0
+    pending_since: int = 0
 
     @property
     def changed(self) -> bool:
@@ -84,14 +86,20 @@ def decide(
     # 状态没变：只可能产生标题/分区变更
     if norm == prev_norm:
         events = []
+        started = state.live_started_at
         if norm == 1:
+            # 直播中用 B 站 live_time 校准开播时间：处理「首次 live_time 缺失」与断流重开
+            if snapshot.live_started_at > 0:
+                candidate = min(snapshot.live_started_at, now)
+                if not started or abs(candidate - started) > 60:
+                    started = candidate
             if snapshot.title and state.title and snapshot.title != state.title:
                 events.append("title_change")
             elif snapshot.area_name and state.area_name and snapshot.area_name != state.area_name:
                 events.append("area_change")
         return Decision(
             live_status=snapshot.live_status,
-            live_started_at=state.live_started_at,
+            live_started_at=started,
             pending_status=None,
             pending_count=0,
             room_state="ok",
@@ -102,8 +110,10 @@ def decide(
     # 状态变化：累计确认次数
     if state.pending_status == norm:
         count = state.pending_count + 1
+        since = state.pending_since or now
     else:
         count = 1
+        since = now
     required = on_confirm_polls if norm == 1 else off_confirm_polls
     if count < required:
         return Decision(
@@ -114,6 +124,7 @@ def decide(
             room_state="ok",
             events=[],
             duration=0,
+            pending_since=since,
         )
 
     if norm == 1:
@@ -128,7 +139,9 @@ def decide(
             duration=0,
         )
 
-    duration = max(0, now - state.live_started_at) if state.live_started_at else 0
+    # 用「第一次观测到下播候选」的时刻作为结束时间，避免把确认期间多算进去
+    end_at = state.pending_since or now
+    duration = max(0, end_at - state.live_started_at) if state.live_started_at else 0
     return Decision(
         live_status=snapshot.live_status,
         live_started_at=0,

@@ -69,3 +69,13 @@ async def page_qq(request: Request):
     if redirect := _guard(request):
         return redirect
     return templates.TemplateResponse(request, "qq.html", {"active": "qq"})
+
+
+@router.get("/hosted/{bot_id}", response_class=HTMLResponse)
+async def page_hosted_ui(request: Request, bot_id: int):
+    """内嵌托管协议端的 WebUI（同源反向代理，见 web/proxy.py）。"""
+    if redirect := _guard(request):
+        return redirect
+    return templates.TemplateResponse(
+        request, "hosted_ui.html", {"active": "qq", "bot_id": bot_id}
+    )

@@ -7,16 +7,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from ..appconfig import AppConfig, load_app_config, save_app_config
 from ..bili.client import BiliError, BiliNotFound, BiliRiskControl
+from ..config import runtime
 from ..db import session_scope
 from ..models import (
     BotConnection,
@@ -257,6 +261,34 @@ async def api_rooms() -> dict:
     return {"ok": True, "rooms": [_room(r, counts.get(r.id, 0)) for r in rooms]}
 
 
+def _bili_detail(exc: BiliError) -> str:
+    """把分阶段错误翻成用户能看懂的一句话（前端直接展示 detail）。"""
+    names = {
+        "room_init": "查询房间号",
+        "room_info": "取房间详情",
+        "status": "批量查询直播状态",
+        "master_info": "取主播信息",
+    }
+    where = names.get(exc.stage or "", exc.stage or "")
+    suffix = ""
+    if exc.code is not None:
+        suffix = f"（B 站 code={exc.code}）"
+    return f"{where}失败：{exc}{suffix}" if where else f"{exc}{suffix}"
+
+
+def _log_bili_error(action: str, query: str, exc: BiliError) -> None:
+    expected = isinstance(exc, BiliNotFound)
+    log.warning(
+        "%s失败 query=%r stage=%s code=%s: %s",
+        action,
+        query,
+        exc.stage or "-",
+        exc.code,
+        exc,
+        exc_info=not expected,
+    )
+
+
 @router.post("/rooms/resolve")
 async def api_rooms_resolve(body: ResolveBody) -> dict:
     engine = get_engine()
@@ -266,11 +298,14 @@ async def api_rooms_resolve(body: ResolveBody) -> dict:
     try:
         resolved = await client.resolve(body.query)
     except BiliRiskControl as exc:
-        raise HTTPException(429, str(exc)) from exc
+        _log_bili_error("解析直播间", body.query, exc)
+        raise HTTPException(429, _bili_detail(exc)) from exc
     except BiliNotFound as exc:
-        raise HTTPException(404, str(exc)) from exc
+        _log_bili_error("解析直播间", body.query, exc)
+        raise HTTPException(404, _bili_detail(exc)) from exc
     except BiliError as exc:
-        raise HTTPException(502, str(exc)) from exc
+        _log_bili_error("解析直播间", body.query, exc)
+        raise HTTPException(502, _bili_detail(exc)) from exc
     return {
         "ok": True,
         "room": {
@@ -297,11 +332,14 @@ async def api_rooms_create(body: RoomCreateBody) -> dict:
     try:
         resolved = await client.resolve(body.query)
     except BiliRiskControl as exc:
-        raise HTTPException(429, str(exc)) from exc
+        _log_bili_error("添加直播间", body.query, exc)
+        raise HTTPException(429, _bili_detail(exc)) from exc
     except BiliNotFound as exc:
-        raise HTTPException(404, str(exc)) from exc
+        _log_bili_error("添加直播间", body.query, exc)
+        raise HTTPException(404, _bili_detail(exc)) from exc
     except BiliError as exc:
-        raise HTTPException(502, str(exc)) from exc
+        _log_bili_error("添加直播间", body.query, exc)
+        raise HTTPException(502, _bili_detail(exc)) from exc
 
     async with session_scope() as session:
         exists = (
@@ -329,6 +367,99 @@ async def api_rooms_create(body: RoomCreateBody) -> dict:
         payload = _room(room)
     engine.trigger_now()
     return {"ok": True, "room": payload}
+
+
+@router.get("/logs")
+async def api_logs(level: str = "", limit: int = 300) -> dict:
+    """最近 N 条内存日志（实时面板首屏）。"""
+    from ..util.logbuf import AREA_NAMES, get_buffer
+
+    buf = get_buffer()
+    return {
+        "ok": True,
+        "lines": buf.snapshot(level, limit),
+        "seq": buf.seq,
+        "areas": AREA_NAMES,
+    }
+
+
+@router.delete("/logs")
+async def api_logs_clear() -> dict:
+    from ..util.logbuf import get_buffer
+
+    get_buffer().clear()
+    return {"ok": True}
+
+
+@router.get("/logs/stream")
+async def api_logs_stream(request: Request, level: str = "", cursor: int = 0) -> StreamingResponse:
+    """SSE 增量日志；`cursor` 是上次拿到的最大 seq。"""
+    from ..util.logbuf import get_buffer
+
+    async def generator():
+        yield "retry: 3000\n\n"
+        buf = get_buffer()
+        last = max(0, cursor)
+        while True:
+            if await request.is_disconnected():
+                break
+            items = buf.since(last, level)
+            if items:
+                last = items[-1]["seq"]
+                payload = {"type": "log", "lines": items}
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            else:
+                yield ": keep-alive\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/logs/files")
+async def api_log_files() -> dict:
+    """日志目录清单（供设置页展示 + 手动清理）。"""
+    from ..util.logretention import list_log_files
+
+    logs_dir = runtime.settings.logs_dir
+    return {"ok": True, "dir": str(logs_dir), "files": list_log_files(logs_dir)}
+
+
+@router.post("/logs/cleanup")
+async def api_logs_cleanup(dry_run: bool = False) -> dict:
+    from ..util.logretention import cleanup_logs
+
+    async with session_scope() as session:
+        config = await load_app_config(session)
+    if config.log_retention_days <= 0:
+        raise HTTPException(400, "自动清理已关闭（日志保留天数为 0），先在设置里改成正数")
+    report = cleanup_logs(
+        config.log_retention_days,
+        logs_dir=runtime.settings.logs_dir,
+        dry_run=dry_run,
+    )
+    log.info(
+        "手动清理日志：删除 %d 个，释放 %.1f KB%s",
+        len(report["deleted"]),
+        report["freed_bytes"] / 1024,
+        "（预演）" if dry_run else "",
+    )
+    return {"ok": True, "report": report}
+
+
+@router.get("/diag/bili")
+async def api_diag_bili(query: str) -> dict:
+    """逐项体检「添加直播间」链路（DNS → 接口 → 批量 → 详情）。"""
+    client = get_engine().bili
+    if client is None:
+        raise HTTPException(503, "采集客户端尚未初始化")
+    try:
+        return await client.diagnose(query)
+    except BiliError as exc:
+        return {"ok": False, "steps": [], "summary": _bili_detail(exc)}
 
 
 @router.patch("/rooms/{room_id}")
@@ -675,6 +806,21 @@ async def api_settings_get() -> dict:
     return {"ok": True, "config": config.to_dict()}
 
 
+@router.get("/alerts/state")
+async def api_alerts_state() -> dict:
+    from ..alerts import alert_manager
+
+    return {"ok": True, "state": alert_manager.status()}
+
+
+@router.post("/alerts/test")
+async def api_alerts_test() -> dict:
+    from ..alerts import alert_manager
+
+    result = await alert_manager.send_test()
+    return {"ok": bool(result.get("ok")), "error": result.get("error", "")}
+
+
 class SettingsBody(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -688,6 +834,9 @@ async def api_settings_put(body: SettingsBody) -> dict:
         config = AppConfig.from_dict(merged)
         await save_app_config(session, config)
     get_engine().trigger_now()
+    from ..alerts import configure_alerts
+
+    configure_alerts(config)
     return {"ok": True, "config": config.to_dict()}
 
 
@@ -715,6 +864,8 @@ def _load_sign(session, bot_id: int) -> SignProvider | None:
 
 @router.get("/bots")
 async def api_bots() -> dict:
+    from ..qq.watchdog import watchdog
+
     async with session_scope() as session:
         bots = (await session.execute(select(BotConnection).order_by(BotConnection.id))).scalars().all()
         payload = []
@@ -727,7 +878,9 @@ async def api_bots() -> dict:
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            payload.append(_bot(bot, sign))
+            item = _bot(bot, sign)
+            item["health"] = watchdog.status(bot.id)
+            payload.append(item)
     return {"ok": True, "bots": payload, "backends": [
         {"key": key, "label": spec.label, "requires_sign": spec.requires_sign, "notes": spec.notes}
         for key, spec in BACKENDS.items()
@@ -1082,6 +1235,89 @@ async def api_test_push(body: TestPushBody) -> dict:
     if not result.ok:
         return {"ok": False, "error": result.error}
     return {"ok": True}
+
+
+class BindingTestPushBody(BaseModel):
+    kind: str = "live_on"
+
+
+#: 同一绑定 5 秒内只允许发一条测试消息，防止连点刷屏
+_BINDING_TEST_AT: dict[int, float] = {}
+
+
+@router.post("/subscriptions/{binding_id}/test-push")
+async def api_binding_test_push(binding_id: int, body: BindingTestPushBody) -> dict:
+    """按「该群绑定的直播间」真实数据渲染一条开播/下播消息，末尾注明是测试。"""
+    from ..bili.covers import to_base64_uri
+    from ..push.render import RenderInput, build_message
+
+    kind = body.kind if body.kind in ("live_on", "live_off") else "live_on"
+    now = time.monotonic()
+    if now - _BINDING_TEST_AT.get(binding_id, 0.0) < 5.0:
+        raise HTTPException(429, "刚发过一条测试消息，5 秒后再试")
+
+    async with session_scope() as session:
+        sub = await session.get(Subscription, binding_id)
+        if sub is None:
+            raise HTTPException(404, "绑定关系不存在")
+        room = await session.get(LiveRoom, sub.room_id)
+        target = await session.get(PushTarget, sub.target_id)
+        if room is None:
+            raise HTTPException(404, "直播间不存在")
+        if target is None:
+            raise HTTPException(404, "推送目标不存在")
+        bot = await session.get(BotConnection, target.bot_connection_id)
+        if bot is None:
+            raise HTTPException(404, "机器人连接不存在")
+        config = await load_app_config(session)
+
+    client = await registry.manager.get(bot)
+    if not client.connected:
+        raise HTTPException(503, f"机器人未连接（状态：{client.state}）。先完成扫码登录或检查外接配置。")
+
+    started = int(getattr(room, "live_started_at", 0) or 0)
+    duration = max(0, now_ts() - started) if started else 0
+    data = RenderInput(
+        kind=kind,
+        uname=room.uname or "",
+        title=room.title or "",
+        area=f"{room.area_parent} / {room.area_name}".strip(" /"),
+        url=f"https://live.bilibili.com/{room.room_id or room.short_id or room.uid}",
+        duration=duration if kind == "live_off" else 0,
+        live_started_at=started,
+        room_id=room.room_id or 0,
+        uid=room.uid or 0,
+        include_cover=bool(sub.include_cover),
+        at_all=False,  # 测试消息绝不 @全体
+        template_override=sub.message_template or "",
+    )
+
+    cover_uri: str | None = None
+    engine = get_engine()
+    if (
+        config.cover_mode != "off"
+        and sub.include_cover
+        and kind == "live_on"
+        and room.cover_url
+    ):
+        if config.cover_mode == "url":
+            cover_uri = room.cover_url
+        elif engine.bili is not None:
+            path = await engine.bili.covers.get(room.cover_url)
+            if path is not None:
+                try:
+                    cover_uri = to_base64_uri(path.read_bytes())
+                except OSError:
+                    cover_uri = None
+
+    message = build_message(data, config, cover_uri)
+    message.text("（测试消息：由 Web UI 手动触发，不是真实的开播/下播）")
+    _BINDING_TEST_AT[binding_id] = now
+    result = await client.send_message(target.kind, target.target_id, message)
+    log.info("手动测试推送：binding=%s kind=%s ok=%s", binding_id, kind, result.ok)
+    if not result.ok:
+        return {"ok": False, "error": result.error}
+    return {"ok": True, "preview": message.preview()}
 
 
 # --------------------------------------------------------------------------- 诊断

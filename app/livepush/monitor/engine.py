@@ -44,6 +44,7 @@ class MonitorEngine:
         self.any_live = False
         self.room_count = 0
         self.wakeup = asyncio.Event()  # 有新推送任务时唤醒派发器
+        self._pending_since: dict[int, int] = {}  # 房间 → 本轮待确认状态首次观测时刻
 
     # ------------------------------------------------------------------ 生命周期
     async def start(self) -> None:
@@ -184,6 +185,7 @@ class MonitorEngine:
                     row.pending_status = None
                     row.pending_count = 0
                     row.fail_streak = 0
+                    self._pending_since.pop(info["id"], None)
                     row.last_checked_at = now_ts()
                     row.updated_at = now_ts()
                     continue
@@ -196,6 +198,7 @@ class MonitorEngine:
         now = now_ts()
         previous_norm = row.live_norm
         previous_title = row.title
+        started_before = row.live_started_at
         state = RoomState(
             room_state=row.room_state,
             live_status=row.live_status,
@@ -206,6 +209,7 @@ class MonitorEngine:
             area_name=row.area_name,
             notify_on_add=row.notify_on_add,
         )
+        state.pending_since = self._pending_since.get(row.id, 0)
         decision = decide(
             state,
             snap,
@@ -213,6 +217,10 @@ class MonitorEngine:
             on_confirm_polls=config.on_confirm_polls,
             off_confirm_polls=config.off_confirm_polls,
         )
+        if decision.pending_status is None:
+            self._pending_since.pop(row.id, None)
+        else:
+            self._pending_since[row.id] = decision.pending_since or now
 
         # 更新直播间快照
         row.uid = snap.uid or row.uid
@@ -257,6 +265,7 @@ class MonitorEngine:
                         "url": snap.url,
                         "cover_url": row.cover_url,
                         "duration": decision.duration,
+                        "live_started_at": started_before,
                         "live_status": snap.live_status,
                         "online": snap.online,
                     },

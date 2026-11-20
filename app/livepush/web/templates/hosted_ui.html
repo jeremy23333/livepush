@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <h1>协议端 WebUI</h1>
+  <p class="muted">
+    通过 livepush 内嵌访问，不需要额外端口或隧道路由。
+    <a href="/hosted/{{ bot_id }}/webui/" target="_blank" rel="noopener">在新标签打开</a>
+    ·
+    <a href="/qq">返回 QQ 账号</a>
+  </p>
+</section>
+<iframe
+  src="/hosted/{{ bot_id }}/webui/"
+  title="协议端 WebUI"
+  style="width:100%;height:calc(100vh - 170px);border:1px solid #2a2f3a;border-radius:12px;background:#fff"
+></iframe>
+{% endblock %}

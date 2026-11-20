@@ -423,6 +423,56 @@ grep -iE "error|traceback|412|352|45" data/logs/app.log | tail -50
 Web UI 里也有三个入口：**`/logs` 页**看每条推送的任务状态和错误原文；
 **`/qq` 页**看连接状态并能直接展开协议端日志；**`/settings` 页**做签名体检。
 
+### 9b. 日志保留、故障告警、掉线探测（2.1.0）
+
+这三项都在 **设置页**，不用改 `.env`：
+
+| 想做什么 | 设置页面板 | 关键配置 |
+| --- | --- | --- |
+| 日志别无限涨 | 日志与清理 | `log_retention_days`（默认 14，0 关闭）、`log_cleanup_hour`（默认 4 点）、`log_service_truncate_mb` |
+| 出错主动通知 | 故障告警 | `alert_enabled`、`alert_wecom_url`、`alert_min_level`、`alert_cooldown_sec`、`alert_max_per_minute` |
+| 发现 QQ 被踢 | QQ 掉线探测 | `bot_health_interval_sec`、`bot_offline_grace_sec`、`bot_good_fail_threshold` |
+
+日志保留的行为：**每天到点跑一次 + 服务启动时跑一次**；只删 `mtime` 超过 N 天的轮转文件（`app.log.1`、`yogurt-3.log.2` 等）；
+`app.log` 与 `service.log` 永不删除，后者只在启动时截断到 `log_service_truncate_mb`。
+
+```bash
+python -m livepush logs list                 # 每个文件多大、多久没动、属于哪个分区
+python -m livepush logs cleanup --dry-run    # 演练
+python -m livepush logs cleanup              # 按设置执行
+```
+
+故障告警的三层收敛：等级过滤 → 同类错误冷却（数字/十六进制归一） → 每分钟上限。
+告警本身写 `livepush.alerts` logger，不会自己告警自己。配好后点「发送测试告警」验证。
+
+掉线探测：QQ 被风控踢下线时 WebSocket 往往还连着（NapCat 的 `get_status` 甚至仍报 online），
+所以看门狗看「`get_login_info` 真实往返 + 心跳年龄 + `status.good` + 下线 notice + 容器状态 + 容器日志关键词」，
+连续异常超过宽限期才告警，**只告警不自动重启**。
+
+### 9c. 添加直播间失败（502）怎么定位
+
+页面详情现在会区分阶段；服务器上直接跑：
+
+```bash
+python -m livepush bili "https://live.bilibili.com/22637261"
+```
+
+五步（解析 / DNS / HTTP 接口 / 批量状态 / 房间详情）逐项给 OK 或 FAIL 与耗时。
+也可以 `GET /api/diag/bili?query=...`（需登录）。失败会写进 `livepush.api` logger：
+
+```bash
+grep 'livepush.api' data/logs/app.log | tail -n 20
+```
+
+### 9d. 内嵌托管 WebUI（可选）
+
+托管模式（NapCat/SnowLuma）的 WebUI 默认只监听 `127.0.0.1`。经 Cloudflare Tunnel 或反代访问 livepush 时，
+可以直接在 livepush 里打开：**`/qq` → 列表里点「托管」→「在 livepush 内打开」**，
+或直接访问 `http://<livepush 地址>/hosted/<bot_id>`。
+
+它是同源反向代理（HTTP + WebSocket），复用 livepush 的登录态；因此不需要再给 WebUI 单独开端口或加隧道路由。
+第三方界面大版本升级后若加了 Service Worker，可能仍需直接暴露端口。
+
 ---
 
 ## 10. 端到端验收
@@ -432,6 +482,11 @@ Web UI 里也有三个入口：**`/logs` 页**看每条推送的任务状态和�
 - [ ] 点「立即检查」能立刻触发一次采集，不用等下一个周期
 - [ ] 停掉协议端再发一次 → `/logs` 里看到重试和最终失败原因，协议端恢复后能自动补发
 - [ ] `sudo reboot` 后服务自动起来（`systemctl is-enabled livepush@ubuntu` 应为 `enabled`）
+- [ ] 总览页「实时日志」有输出，切等级/分区能过滤，暂停与清空可用
+- [ ] 设置页「发送测试告警」能在企业微信群里收到 markdown
+- [ ] `python -m livepush logs list` 有输出；把某个轮转文件 `touch -d` 成 20 天前，`logs cleanup` 后它消失而 `app.log` 还在
+- [ ] 绑定弹窗里「发测试推送」能收到带「测试消息」标注的群消息
+- [ ] 托管模式下「在 livepush 内打开」能进 NapCat WebUI
 
 ---
 
@@ -459,6 +514,10 @@ Web UI 里也有三个入口：**`/logs` 页**看每条推送的任务状态和�
 | 托管模式安装立刻失败、提示找不到 Docker | `docker version` | 没装 Docker 或当前用户不在 `docker` 组（`sudo usermod -aG docker $USER` 后重新登录）；也可改走外接 |
 | 托管容器在跑但「连接」失败 | `/qq` 托管面板的日志 | 首次启动要加载 QQ，等 1–2 分钟再点「连接」；或镜像里的 QQ 版本过旧，换后端/走外接 |
 | SnowLuma 不知道 WebUI/远程桌面密码 | `.venv/bin/python -m livepush hosted logs <id>` | 首次启动的临时密码打印在容器日志里 |
+| 添加直播间报 502 | 页面详情 / `python -m livepush bili "<输入>"` | 详情会写阶段（DNS、接口、业务码、房间不存在）；429 是风控、404 是输入错 |
+| 企业微信没收到告警 | 设置页「故障告警」 | webhook 地址/开关/等级；企业微信限 20 条/分钟，超限会被丢弃 |
+| 实时日志一片空白 | 总览页日志面板 | 只显示进程启动后的日志；刚重启是正常的，去 `/settings` 看落盘文件 |
+| 内嵌 WebUI 白屏 | 浏览器控制台 + `app.log` 的 `livepush.api` | 第三方前端若用了 Service Worker 或绝对路径 module import，需直连端口；先用 `/qq` 里的直链确认 WebUI 本身正常 |
 
 ---
 

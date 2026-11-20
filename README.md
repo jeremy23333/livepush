@@ -13,6 +13,7 @@
 - **推送**：outbox 模式（先落库再发送，`UNIQUE(event_id,target_id)` 保证幂等），失败按 2s/5s/15s 重试；群不存在自动禁用该目标；机器人离线时任务挂着，恢复后补发。
 - **QQ**：支持两条协议（Milky / OneBot 11）和三种模式（内置托管 / Docker 托管第三方 NTQQ / 外接已有协议端），Web UI 里能直接扫码登录。
 - **签名**：内置自建签名服务的进程管理（免 Token），并带体检与 `Code 45` 中文诊断；对不上的版本自动探测偏移，也支持手动 `--offset`。
+- **可观测性**：首页实时日志（按等级/分区筛选、SSE 推送）、企业微信故障告警（同类错误冷却去重）、日志按天自动清理、QQ 掉线探测（真实往返 + 心跳 + 容器日志）。
 
 ### 为什么不逐房间轮询 / 不用弹幕 WS
 
@@ -128,7 +129,20 @@ bash scripts/bootstrap.sh --with-sign
 
 ---
 
-## 6. 常见问题
+## 6. 运维与诊断
+
+细节见 [`docs/OPERATIONS.md`](docs/OPERATIONS.md)，要点：
+
+- **实时日志**：总览页底部，按等级/功能分区筛选（`livepush.monitor` 采集、`livepush.push` 推送、`livepush.qq.*` 连接、`livepush.hosted.*` 托管……）。
+- **日志保留**：设置页配「保留 N 天」，每天定时清理轮转文件；`app.log`、`service.log` 永不删。命令：`python -m livepush logs list|cleanup`。
+- **故障告警**：填企业微信群机器人 webhook，按等级 + 冷却 + 每分钟上限推送；带「发送测试告警」按钮。
+- **掉线探测**：QQ 被风控踢下线（WS 还连着）时，靠 `get_login_info` 真实往返、心跳 `good`、下线 notice、容器日志关键词综合判断，超过宽限期才告警。
+- **添加直播间报 502**：`python -m livepush bili "<房间号或链接>"` 逐层定位；页面现在会显示失败阶段（DNS/接口/业务码/房间不存在）。
+- **内嵌 WebUI**：托管模式的 NapCat WebUI 可在 livepush 内打开（`/hosted/<bot_id>`），不需要再加端口或隧道路由。
+
+---
+
+## 7. 常见问题
 
 | 现象 | 处理 |
 |---|---|
@@ -140,10 +154,14 @@ bash scripts/bootstrap.sh --with-sign
 | 手机扫码后 PC 端 QQ 掉线 | NTQQ PC 协议会互相挤占，扫码期间不要同时登 PC QQ |
 | 机器人离线时开播了 | 任务会留在 outbox，机器人恢复后补发；超过 6 小时的旧下播事件直接跳过 |
 | 想看环境到底哪坏了 | `python -m livepush doctor`，或在设置页点「环境自检」 |
+| 添加直播间提示 502 / 找不到房间 | 页面详情会写失败阶段；再跑 `python -m livepush bili "<链接或房间号>"` 逐层定位（解析/DNS/接口/业务码/房间详情） |
+| 企业微信收不到告警 | 检查 `alert_enabled` 与 webhook 地址；点「发送测试告警」看返回的错误；企业微信限 20 条/分钟，超了会被丢弃 |
+| `data/logs/` 越来越大 | 设置页「日志与清理」配保留天数（默认 14）；`python -m livepush logs list` 看是谁占的 |
+| QQ 被踢了但没有任何提示 | 设置页「QQ 掉线探测」把宽限期调小；告警通道是否配了；`/api/bots` 的 `health` 里能看到判据 |
 
 ---
 
-## 7. 目录
+## 8. 目录
 
 ```
 app/livepush/
@@ -152,7 +170,9 @@ app/livepush/
 ├─ qq/          Message 模型、OneBot11、Milky、子进程托管、扫码编排、签名
 │  └─ hosted/   Docker 托管 NapCat / SnowLuma（下载、docker、端口探测、管理器）
 ├─ push/        渲染、outbox 派发
-├─ web/         路由、Jinja2 模板、静态资源
+├─ util/        日志、环形日志缓冲、日志清理
+├─ alerts.py    企业微信故障告警
+├─ web/         路由、Jinja2 模板、静态资源、内嵌 WebUI 反向代理
 ├─ cli.py       run / doctor / init
 └─ main.py      FastAPI 装配
 scripts/bootstrap.sh        一次性环境准备（含可选签名）
@@ -161,7 +181,7 @@ tests/                      pytest
 data/                       运行期数据（勿提交）
 ```
 
-## 8. 开发
+## 9. 开发
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -170,7 +190,7 @@ data/                       运行期数据（勿提交）
 
 测试覆盖：状态机表驱动、B 站返回解析（`live_time` 为 int/str/0、缺失 uid）、模板与两种协议的段序列化、二维码三级提取、签名诊断、outbox 幂等/重试/禁用目标、Web 鉴权与 CRUD。
 
-## 9. 已知限制
+## 10. 已知限制
 
 - 只做直播状态，不做动态、不录制、不接弹幕。
 - 单实例 + SQLite，不做多租户。
