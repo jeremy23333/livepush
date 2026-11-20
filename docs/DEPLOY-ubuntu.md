@@ -13,6 +13,17 @@
 
 ## 0. 先把文件传到服务器
 
+> **现在推荐直接 `git clone`**（见文末「以后怎么更新」）：代码在 `git@github.com:jeremy23333/livepush.git`。
+> 第一次装也可以不走 tar，直接：
+>
+> ```bash
+> sudo apt-get install -y git
+> git clone git@github.com:jeremy23333/livepush.git ~/livepush
+> cd ~/livepush
+> ```
+>
+> 然后从第 1 步继续。下面这节保留给「无法访问 GitHub / 想先离线装」的情况。
+
 ### 要拷什么
 
 **需要**（缺一个都跑不起来）：
@@ -521,21 +532,109 @@ grep 'livepush.api' data/logs/app.log | tail -n 20
 
 ---
 
-## 附：以后怎么更新
+## 附：以后怎么更新（Git 流程）
+
+代码在 GitHub 上：`git@github.com:jeremy23333/livepush.git`，分支 `main`，发布打 tag（如 `v2.1.0`）。
+服务器上只做「拉取 + 装依赖 + 重启」，**数据（`data/`）不在仓库里，pull 不会碰它**。
+
+### 一次性：把现有的 tar 部署换成 git 仓库
+
+服务器现在（第 0–10 步装的）不是 git 仓库。**原地转换**最省事，`data/` 与 `.venv/` 都是未跟踪文件，不会被覆盖：
 
 ```bash
-# 本机（Linux/macOS）
-rsync -avc --exclude .venv --exclude .tmp --exclude data --exclude __pycache__ --exclude .pytest_cache ./ ubuntu@<IP>:~/livepush/
-# 服务器
-cd ~/livepush && .venv/bin/python -m pip install -e . -q && sudo systemctl restart livepush@ubuntu
+# 1) 停服务 + 备份数据
+sudo systemctl stop livepush@alan
+cp -a ~/program/livepush/data ~/livepush-data-backup-$(date +%F)
+
+# 2) 让服务器能读 GitHub（用只读 Deploy Key，最省心）
+ssh-keygen -t ed25519 -C "livepush@$(hostname)" -f ~/.ssh/livepush_deploy -N ""
+cat ~/.ssh/livepush_deploy.pub
+# 把这个公钥粘到 GitHub → 仓库 Settings → Deploy keys → Add deploy key（不要勾 Allow write）
+
+cat >> ~/.ssh/config <<'EOF'
+Host github.com
+  IdentityFile ~/.ssh/livepush_deploy
+  IdentitiesOnly yes
+EOF
+chmod 600 ~/.ssh/config
+ssh -T git@github.com        # 看到 "successfully authenticated" 即可
+
+# 3) 原地转换（注意：会强制覆盖被跟踪的源码文件；data/、.venv/、.env 保留）
+cd ~/program/livepush
+git init -b main
+git remote add origin git@github.com:jeremy23333/livepush.git
+git fetch origin main
+git checkout --force -B main origin/main
+
+# 4) 依赖与自检（venv 路径没变，不需要重建）
+.venv/bin/python -m pip install -q -e .
+.venv/bin/python -m livepush init
+.venv/bin/python -m livepush doctor
+
+# 5) 起服务
+sudo systemctl start livepush@alan
 ```
 
-只改了 Python/模板代码的话，连 `pip install` 都可以省，直接 `restart`。
-`pyproject.toml` 加了新依赖才需要重新 `pip install -e .`。
-数据库结构有变化时会自动迁移（`schema_version` 表），**升级前建议先备份**：
+> 转换前如果 `~/program/livepush` 里有你手工改过、又没提交的文件（比如 `.env`），它们会作为未跟踪文件留着；
+> 但如果是**被仓库跟踪的文件**（例如 `app/...`），会被远端版本覆盖——真有本地改动请先 `git stash` 或在 GitHub 上合掉。
+
+### 日常升级（推荐用脚本）
+
+```bash
+cd ~/program/livepush
+bash scripts/upgrade.sh
+```
+
+它做的事：检查工作区干净 → `git fetch --all --tags --prune` → `git merge --ff-only` 到 `main` →
+`pip install -e .` → `livepush init`（幂等）→ `livepush doctor` → `sudo systemctl restart livepush@alan`。
+
+常用开关：
+
+```bash
+bash scripts/upgrade.sh --no-restart     # 只更新代码，手工验证后再重启
+bash scripts/upgrade.sh --no-install     # 依赖没变时省掉 pip
+bash scripts/upgrade.sh --tag v2.1.0     # 切到某个发布版本（也可用来回滚）
+bash scripts/upgrade.sh --force-restart  # doctor 有失败项也重启（慎用）
+```
+
+### 手工升级（等价步骤）
+
+```bash
+cd ~/program/livepush
+sudo systemctl stop livepush@alan
+git fetch --all --tags --prune
+git log --oneline HEAD..origin/main      # 看这次会更新什么
+git pull --ff-only
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m livepush init
+.venv/bin/python -m livepush doctor
+sudo systemctl start livepush@alan
+```
+
+只改了 Python / 模板时 `pip install` 可以省略；`pyproject.toml` 加了新依赖才必须重装。
+数据库结构有变化时会自动建新表（`schema_version` 表），但**升级前仍建议备份**：
 
 ```bash
 cp data/livepush.db "data/livepush.db.$(date +%F-%H%M).bak"
+```
+
+### 回滚
+
+```bash
+cd ~/program/livepush
+git log --oneline -10                    # 找到上一个版本的 commit 或 tag
+bash scripts/upgrade.sh --tag v2.0.0     # 切回旧 tag（会装依赖并重启）
+# 或者：git checkout <commit> 后手工 pip install -e . && sudo systemctl restart livepush@alan
+```
+
+回滚后如果数据库里已有新表，旧版本不会去读它，一般无需处理；相反方向（旧库 → 新版本）才会自动建表。
+
+### 本机发版
+
+```bash
+git add -A && git commit -m "feat: ..."
+git push origin main
+git tag -a v2.1.0 -m "livepush 2.1.0" && git push origin v2.1.0   # 打 tag 便于回滚
 ```
 
 ## 附：备份与迁移

@@ -49,7 +49,11 @@ sudo systemctl enable --now livepush@$USER
 > 默认只监听 `127.0.0.1`。要在别的机器访问，改成 `LIVEPUSH_HOST=0.0.0.0` 并自行加反代/防火墙——这个页面能往群里发消息。
 
 逐步骤的部署 / 调试清单（拷哪些文件、venv 怎么建、按什么顺序跑、日志在哪、故障怎么查）见
-[`docs/DEPLOY-ubuntu.md`](docs/DEPLOY-ubuntu.md)。
+[`docs/DEPLOY-ubuntu.md`](docs/DEPLOY-ubuntu.md)。升级走 Git：
+
+```bash
+cd ~/program/livepush && bash scripts/upgrade.sh    # 拉取 + 装依赖 + init + doctor + 重启
+```
 
 ---
 
@@ -176,6 +180,7 @@ app/livepush/
 ├─ cli.py       run / doctor / init
 └─ main.py      FastAPI 装配
 scripts/bootstrap.sh        一次性环境准备（含可选签名）
+scripts/upgrade.sh          服务器端升级（git 拉取 + 装依赖 + doctor + 重启）
 deploy/livepush@.service    systemd 模板
 tests/                      pytest
 data/                       运行期数据（勿提交）

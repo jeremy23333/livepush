@@ -14,6 +14,7 @@
 - **内嵌托管 WebUI**：`/hosted/{bot_id}` 用 iframe 打开 NapCat WebUI，`/hosted/{bot_id}/webui/*` 做 HTTP + WebSocket 反向代理，HTML 注入 `<base>` 与 fetch/XHR/WS/EventSource 重写 shim，复用 livepush 登录态。经 Cloudflare Tunnel 访问时不再需要额外端口。
 - **B 站诊断**：`python -m livepush bili <房间号/链接>` 与 `GET /api/diag/bili?query=`，按「解析 → DNS → HTTP 接口 → 批量状态 → 房间详情」逐步给 OK/FAIL 与耗时。
 - **模板占位符 `{live_started}`**：下播消息里可写开播时刻。
+- **升级脚本 `scripts/upgrade.sh`**：服务器上一条命令完成「检查工作区 → `git fetch` → `ff-only` 合并/切 tag → 装依赖 → `init` → `doctor` → 重启 systemd」，支持 `--tag` 回滚、`--no-restart`、`--force-restart`；`doctor` 有失败项时默认不重启。
 
 ### 改进
 
