@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi.templating import Jinja2Templates
 
+from .. import __version__
 from ..util.timefmt import fmt_dt, fmt_duration, humanize_ago
 
 WEB_DIR = Path(__file__).parent
@@ -59,4 +60,7 @@ templates.env.globals.update(
     ROOM_STATE_LABELS=ROOM_STATE_LABELS,
     JOB_STATUS_LABELS=JOB_STATUS_LABELS,
     EVENT_LABELS=EVENT_LABELS,
+    # 静态资源版本号：Cloudflare / 浏览器会长期缓存 app.js，
+    # 不加版本号时新增的按钮在旧 JS 里没有监听器，表现为「点了没反应」。
+    version=__version__,
 )

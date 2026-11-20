@@ -71,3 +71,43 @@ def test_proxy_page_renders_iframe(client: TestClient):
     assert resp.status_code == 200
     assert '/hosted/5/webui/' in resp.text
     assert "<iframe" in resp.text
+
+
+def test_proxy_page_embeds_webui_token(client: TestClient, data_dir):
+    """令牌读得到时，iframe 地址直接带上 ?token=，省掉手抄日志。"""
+    import asyncio
+    from pathlib import Path
+
+    _login(client)
+
+    from livepush.db import session_scope
+    from livepush.models import BotConnection, HostedEngine
+    from livepush.qq.hosted import webui as webui_mod
+
+    async def seed() -> int:
+        async with session_scope() as session:
+            bot = BotConnection(name="托管", transport="onebot11", mode="hosted", backend="napcat", uin=1)
+            session.add(bot)
+            await session.flush()
+            session.add(
+                HostedEngine(
+                    bot_connection_id=bot.id,
+                    backend="napcat",
+                    container_name="livepush-napcat-test",
+                    install_dir=str(Path(data_dir) / "hosted" / str(bot.id)),
+                    host_webui_port=6099,
+                )
+            )
+            return int(bot.id)
+
+    bot_id = asyncio.run(seed())
+    install_dir = Path(data_dir) / "hosted" / str(bot_id)
+    (install_dir / "config").mkdir(parents=True, exist_ok=True)
+    (install_dir / "config" / "webui.json").write_text(
+        '{"token": "tok-page-123456"}', encoding="utf-8"
+    )
+    webui_mod._cache.clear()
+
+    resp = client.get(f"/hosted/{bot_id}")
+    assert resp.status_code == 200
+    assert "token=tok-page-123456" in resp.text

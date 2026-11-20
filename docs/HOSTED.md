@@ -25,11 +25,23 @@
 4. 登录：
    - **NapCat**：首次启动会在容器日志里打印二维码链接，并把二维码图片写到
      `data/hosted/napcat-<id>/cache/qrcode.png`；也可以打开它的 WebUI
-     （`http://<服务器>:<webui端口>/webui`，令牌在容器内 `/app/napcat/config/webui.json`）。
+     （`http://<服务器>:<webui端口>/webui`）。
    - **SnowLuma**：不在这里扫码——打开它自己的 WebUI（`http://<服务器>:<webui端口>`）登录，
      需要看桌面时用远程桌面（`http://<服务器>:<remote端口>`，密码打印在容器日志里）；
      OneBot 连接建议在它的 WebUI 里配置，指向我们分配的端口与 Token。
 5. 绑定时如果提示「端口没有响应」，等 1–2 分钟点「连接」重试（首次要加载 QQ）。
+
+### NapCat WebUI 的令牌怎么来的
+
+NapCat 每次启动会生成一个 WebUI 登录令牌，2.1.0 及更早只能在容器日志里手抄，且日志窗口只有 60 行、经常已被挤出。现在 `/qq → 托管` 弹窗会直接显示令牌并提供「复制」「带令牌打开」，内嵌页 `/hosted/<id>` 的 iframe 也会自动带上 `?token=`。读取顺序：
+
+1. **配置文件**（首选）：容器内 `/app/napcat/config/webui.json` 就是宿主机 `data/hosted/napcat-<id>/config/webui.json`（我们把这个目录挂进去了），直接读；
+2. **`docker exec cat`**：文件还没落盘时，从容器里 `cat` 同一个路径；
+3. **启动日志**：最后再从前 300 行日志里正则捞（这种情况可能是一次性令牌）。
+
+令牌只在内存缓存 10 秒；重装/重启容器后点一下「刷新状态」即可重新读取。三条都拿不到时会提示「手动登录」，不会阻塞其他功能。
+
+> 安全边界：令牌只通过已登录的 livepush 会话展示，`/hosted/<id>/webui/*` 反代本身要求 livepush 登录态；不要把这几个地址公开到无鉴权的隧道上。
 
 ## 命令行
 
@@ -38,7 +50,7 @@ python -m livepush hosted list          # 列出所有托管容器
 python -m livepush hosted install 3     # 安装/重装 3 号连接（前台等进度）
 python -m livepush hosted start 3       # 启动容器 + 等待端口 + 绑定
 python -m livepush hosted stop 3        # 停容器（不删，数据保留）
-python -m livepush hosted logs 3        # 看容器最近 60 行输出
+python -m livepush hosted logs 3        # 看容器最近 300 行输出（NapCat 令牌在启动早期）
 ```
 
 ## 目录与端口布局

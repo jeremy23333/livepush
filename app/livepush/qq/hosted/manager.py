@@ -37,6 +37,7 @@ from .docker import Docker, DockerError
 from .download import DownloadError, fetch
 from .napcat import NapCatBackend
 from .snowluma import SnowLumaBackend
+from .webui import WebUIToken, read_webui_token
 
 log = logging.getLogger("livepush.hosted")
 
@@ -478,13 +479,25 @@ class HostedManager:
         docker = self._docker()
         state = await docker.state(engine["container_name"])
         docker_up = await docker.available()
-        logs = await docker.logs(engine["container_name"], 60) if state else ""
+        logs = await docker.logs(engine["container_name"], 300) if state else ""
         ports = HostPorts(
             ws=engine["host_ws_port"],
             http=engine["host_http_port"],
             webui=engine["host_webui_port"],
             remote=engine["remote_port"],
         )
+        # WebUI 登录令牌：宿主机 <workdir>/config/webui.json → docker exec → 启动日志
+        webui = WebUIToken(port=ports.webui)
+        if state == "running" and ports.webui:
+            with contextlib.suppress(Exception):
+                webui = await read_webui_token(
+                    workdir=Path(engine["install_dir"]) if engine["install_dir"] else None,
+                    container=engine["container_name"],
+                    docker=docker,
+                    log_tail=logs,
+                    host_port=ports.webui,
+                    cache_key=engine["container_name"],
+                )
         return {
             "installed": True,
             "backend": engine["backend"],
@@ -497,11 +510,25 @@ class HostedManager:
             "ws_url": f"ws://{host}:{ports.ws}" if ports.ws else "",
             "webui_url": backend.webui_url(host, ports.webui) if backend else "",
             "remote_url": backend.remote_url(host, ports.remote) if backend else "",
+            "webui": webui.to_dict(),
             "token": engine["token"],
             "log_tail": logs,
             "last_error": engine["last_error"],
             "notes": backend.notes() if backend else [],
         }
+
+    async def webui_token(self, bot_id: int) -> dict[str, Any]:
+        """轻量读取 WebUI 令牌（不拉容器日志，供内嵌页 iframe 用）。"""
+        engine = await self._load_engine(bot_id)
+        if engine is None:
+            return {"token": "", "source": "", "port": 0}
+        info = await read_webui_token(
+            workdir=Path(engine["install_dir"]) if engine["install_dir"] else None,
+            container=engine["container_name"],
+            host_port=engine["host_webui_port"],
+            cache_key=engine["container_name"],
+        )
+        return info.to_dict()
 
     async def stop_all(self) -> None:
         """进程退出时只停容器，不删（下次启动还能 resume）。"""

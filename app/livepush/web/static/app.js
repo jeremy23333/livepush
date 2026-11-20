@@ -8,17 +8,32 @@ const LP = {
       init.headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body);
     }
+    const startedAt = performance.now();
     const res = await fetch(path, init);
     if (res.status === 401) {
       window.location.href = '/login';
       throw new Error('未登录');
     }
+    // 先读文本再解析：反向代理 / Cloudflare 的 502 是 HTML，直接 res.json() 会吞掉原因
+    const text = await res.text();
     let data = null;
-    try { data = await res.json(); } catch (e) { /* 非 JSON */ }
+    try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
     if (!res.ok) {
-      const msg = (data && (data.detail || data.error)) || `HTTP ${res.status}`;
+      const elapsed = Math.round(performance.now() - startedAt);
+      let msg;
+      if (data && (data.detail || data.error)) {
+        msg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+      } else {
+        const server = res.headers.get('server') || '';
+        const snippet = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        msg = `HTTP ${res.status}${server ? ' · ' + server : ''} · ${elapsed}ms${snippet ? ' · ' + snippet : ''}`;
+        console.error('[livepush] 非 JSON 错误响应', path, res.status, String(text || '').slice(0, 2000));
+      }
       if (!silent) LP.toast(msg, 'err');
-      throw new Error(msg);
+      const err = new Error(msg);
+      err.status = res.status;
+      err.detail = msg;
+      throw err;
     }
     return data;
   },
@@ -307,36 +322,82 @@ pages.rooms = async () => {
 
   document.getElementById('btn-refresh').addEventListener('click', load);
 
+  const errorBox = document.getElementById('resolve-error');
+
+  const runDiag = async (path) => {
+    try {
+      const d = await LP.api(path);
+      const rows = (d.steps || []).map((s) => `<tr>
+        <td>${s.ok ? 'OK' : 'FAIL'}</td><td>${LP.esc(s.name)}</td>
+        <td class="small muted">${s.ms}ms</td><td class="small">${LP.esc(s.detail || '')}</td></tr>`).join('');
+      LP.modal('诊断结果', LP.el('div', {}, `<p>${LP.esc(d.summary || '')}</p>
+        <table><thead><tr><th>结果</th><th>步骤</th><th>耗时</th><th>说明</th></tr></thead>
+        <tbody>${rows}</tbody></table>`));
+    } catch (e) { /* toast 已提示 */ }
+  };
+
+  const showResolveError = (msg, query) => {
+    errorBox.hidden = false;
+    errorBox.innerHTML = `<div><strong>解析失败：</strong>${LP.esc(msg)}</div>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="small" id="btn-diag-input">诊断这个输入</button>
+        <button class="small" id="btn-diag-net">网络诊断</button>
+      </div>`;
+    document.getElementById('btn-diag-input').addEventListener('click', () =>
+      runDiag('/api/diag/bili?query=' + encodeURIComponent(query)));
+    document.getElementById('btn-diag-net').addEventListener('click', () => runDiag('/api/diag/network'));
+  };
+
+  const resolvedAsText = (r) => {
+    if (r.resolved_as === 'uid') return `按 UID ${r.input_number || r.uid} 识别`;
+    if (r.resolved_as === 'short') return `按短号识别，对应直播间 ${r.room_id}`;
+    return `按直播间号 ${r.input_number || r.room_id} 识别`;
+  };
+
   document.getElementById('btn-resolve').addEventListener('click', async () => {
     const query = document.getElementById('add-query').value.trim();
     if (!query) return;
+    errorBox.hidden = true;
     try {
       const d = await LP.api('/api/rooms/resolve', { method: 'POST', body: { query } });
       const r = d.room;
       pending = r;
       preview.hidden = false;
+      const amb = r.ambiguous ? `<div class="warn-box">
+        数字 ${r.input_number} 同时是 UID ${r.input_number}（${LP.esc(r.ambiguous.uname || '?')}，房间 ${r.ambiguous.room_id}）。
+        如果你要加的是这个 UP 主，请改用 <code>space.bilibili.com/${r.input_number}</code> 再解析一次。
+      </div>` : '';
       preview.innerHTML = `
-        <div class="card wide" style="display:flex;gap:14px;align-items:center">
-          <img class="avatar" style="width:44px;height:44px" src="${LP.esc(r.face || '/static/favicon.svg')}" alt="">
-          <div style="flex:1">
-            <div><strong>${LP.esc(r.uname)}</strong> ${r.live ? LP.badge('正在直播', 'live') : LP.badge('未开播', 'dim')}</div>
-            <div class="small muted">uid ${r.uid} · 房间 ${r.room_id || r.short_id || '-'} · ${LP.esc(r.area || '')}</div>
-            <div class="small muted">${LP.esc(r.title || '')}</div>
+        <div class="card wide">
+          <div style="display:flex;gap:14px;align-items:center">
+            <img class="avatar" style="width:44px;height:44px" src="${LP.esc(r.face || '/static/favicon.svg')}" alt="">
+            <div style="flex:1">
+              <div><strong>${LP.esc(r.uname)}</strong> ${r.live ? LP.badge('正在直播', 'live') : LP.badge('未开播', 'dim')}</div>
+              <div class="small muted">uid ${r.uid} · 房间 ${r.room_id || r.short_id || '-'} · ${LP.esc(r.area || '')}</div>
+              <div class="small muted">${LP.esc(r.title || '')}</div>
+              <div class="small">${LP.esc(resolvedAsText(r))}</div>
+            </div>
+            <button class="primary" id="btn-confirm-add">添加这个直播间</button>
           </div>
-          <button class="primary" id="btn-confirm-add">添加这个直播间</button>
+          ${amb}
         </div>`;
       document.getElementById('btn-confirm-add').addEventListener('click', async () => {
         if (!pending) return;
-        await LP.api('/api/rooms', {
-          method: 'POST',
-          body: { query: String(pending.uid), notify_on_add: document.getElementById('add-notify').checked },
-        });
-        LP.toast('已添加', 'ok');
-        preview.hidden = true;
-        pending = null;
-        load();
+        try {
+          await LP.api('/api/rooms', {
+            method: 'POST',
+            body: { query: String(pending.uid), notify_on_add: document.getElementById('add-notify').checked },
+          });
+          LP.toast('已添加', 'ok');
+          preview.hidden = true;
+          pending = null;
+          load();
+        } catch (e) { /* 已提示 */ }
       });
-    } catch (e) { /* 已提示 */ }
+    } catch (e) {
+      preview.hidden = true;
+      showResolveError(e.detail || e.message || String(e), query);
+    }
   });
 
   await load();
@@ -588,6 +649,7 @@ pages.settings = async () => {
       const value = d.config[key];
       if (input.type === 'checkbox') input.checked = Boolean(value);
       else input.value = value ?? '';
+      input.dataset.saved = '1';
     }
     const bots = await LP.api('/api/bots');
     if (bots.bots.length) {
@@ -608,8 +670,15 @@ pages.settings = async () => {
       else config[key] = input.value;
     }
     await LP.api('/api/settings', { method: 'PUT', body: { config } });
+    for (const input of inputs) input.dataset.saved = '1';
     LP.toast('设置已保存', 'ok');
   });
+
+  // 改过任何设置就标记为「未保存」，测试告警等按钮据此提示先保存
+  for (const input of inputs) {
+    input.addEventListener('input', () => { input.dataset.saved = '0'; });
+    input.addEventListener('change', () => { input.dataset.saved = '0'; });
+  }
 
   document.getElementById('btn-sign-save').addEventListener('click', async () => {
     const bots = await LP.api('/api/bots');
@@ -699,10 +768,36 @@ pages.settings = async () => {
       alertStateText(d.state);
     } catch (e) { /* 忽略 */ }
   };
-  document.getElementById('btn-alert-test')?.addEventListener('click', async () => {
-    const d = await LP.api('/api/alerts/test', { method: 'POST' });
-    LP.toast(d.ok ? '测试告警已发出' : (d.error || '发送失败'), d.ok ? 'ok' : 'err');
-    await loadAlertState();
+  document.getElementById('btn-alert-test')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    const urlInput = document.querySelector('[data-cfg="alert_wecom_url"]');
+    // 输入框里有没保存的地址时，直接测会用到旧地址，先提醒保存
+    if (urlInput && urlInput.value.trim() && urlInput.dataset.saved === '0') {
+      LP.toast('webhook 地址还没保存，先点「保存设置」再测试', 'err');
+      return;
+    }
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = '发送中…';
+    try {
+      const d = await LP.api('/api/alerts/test', { method: 'POST' });
+      const target = document.getElementById('alert-state');
+      if (d.ok) {
+        LP.toast('测试告警已发出', 'ok');
+        if (target) target.textContent = `最近一次测试：已发送 · errcode=${d.errcode ?? 0} · ${d.elapsed_ms}ms`;
+      } else {
+        const why = d.configured === false ? '还没配置 webhook（保存后生效）' : (d.error || '发送失败');
+        LP.toast(why, 'err');
+        if (target) target.textContent = `最近一次测试：失败 · ${why}`;
+      }
+      await loadAlertState();
+    } catch (e) {
+      const target = document.getElementById('alert-state');
+      if (target) target.textContent = `最近一次测试：失败 · ${e.detail || e.message}`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
   });
 
   document.getElementById('btn-doctor').addEventListener('click', async () => {
@@ -852,6 +947,26 @@ pages.qq = async () => {
     missing: '容器不存在', 'docker-missing': 'Docker 不可用', pending: '待安装',
   }[s] || s || '未知');
 
+  const webuiBox = (s) => {
+    const info = s.webui || {};
+    const href = s.webui_url || '';
+    if (info.token) {
+      const url = href ? `${href}${href.includes('?') ? '&' : '?'}token=${encodeURIComponent(info.token)}` : '';
+      const source = { config: '读自配置文件', exec: '读自容器内', logs: '读自启动日志' }[info.source] || '';
+      return `<div class="card">
+        <div class="small muted">WebUI 登录令牌${source ? '（' + source + '）' : ''}</div>
+        <div class="row" style="margin-top:6px">
+          <span class="mono small">${LP.esc(info.token)}</span>
+          <button class="small" id="btn-copy-webui-token">复制</button>
+          ${url ? `<a class="small" href="${url}" target="_blank" rel="noreferrer">带令牌打开</a>` : ''}
+        </div></div>`;
+    }
+    if (href) {
+      return `<p class="hint">没读到 WebUI 令牌${s.state === 'running' ? '（容器刚启动时可能还没写盘，点「刷新状态」再试）' : ''}。也可以点上面的地址，用容器日志里的临时令牌登录。</p>`;
+    }
+    return '';
+  };
+
   const openHosted = async (botId) => {
     const node = LP.el('div', {}, '<div class="muted">正在读取托管状态…</div>');
     let timer = null;
@@ -889,6 +1004,7 @@ pages.qq = async () => {
             <div><div class="small muted">工作目录</div><div class="mono small">${LP.esc(s.install_dir || '-')}</div></div>
           </div>
           ${s.webui_url ? `<p>WebUI：<a href="${s.webui_url}" target="_blank" rel="noreferrer">${LP.esc(s.webui_url)}</a>　·　<a href="/hosted/${botId}" target="_blank" rel="noreferrer">在 livepush 内打开</a></p>` : ''}
+          ${webuiBox(s)}
           ${s.remote_url ? `<p>远程桌面：<a href="${s.remote_url}" target="_blank" rel="noreferrer">${LP.esc(s.remote_url)}</a></p>` : ''}
           <p class="small muted">OneBot WS：<span class="mono">${LP.esc(s.ws_url || '-')}</span>　Token：<span class="mono">${LP.esc(s.token || '-')}</span></p>
           <div id="hosted-progress">${job && !job.done ? `<div class="card"><div class="small">${LP.esc(job.message)} ${job.total ? pct + '%' : ''}</div></div>` : ''}</div>
@@ -902,9 +1018,21 @@ pages.qq = async () => {
             <button class="small" id="btn-hosted-stop">停止</button>
             <button class="small danger" id="btn-hosted-remove">删除容器</button>
             <button class="small" id="btn-hosted-logs">查看日志</button>
+            <button class="small" id="btn-hosted-refresh">刷新状态</button>
           </div>
           <pre class="log" id="hosted-log" hidden>${LP.esc(s.log_tail || '')}</pre>`;
       }
+      on('btn-hosted-refresh', () => render());
+      on('btn-copy-webui-token', async () => {
+        const token = (s.webui && s.webui.token) || '';
+        if (!token) return;
+        try {
+          await navigator.clipboard.writeText(token);
+          LP.toast('令牌已复制', 'ok');
+        } catch (e) {
+          LP.toast('复制失败，请手动选中复制', 'err');
+        }
+      });
       on('btn-hosted-install', () => post(`/api/hosted/install`, { bot_id: botId }));
       on('btn-hosted-start', () => post(`/api/hosted/${botId}/start`));
       on('btn-hosted-attach', () => post(`/api/hosted/${botId}/attach`));

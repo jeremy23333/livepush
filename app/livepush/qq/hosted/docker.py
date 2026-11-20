@@ -105,7 +105,12 @@ class Docker:
             return ""
         return out.strip() if code == 0 else ""
 
-    async def logs(self, name: str, tail: int = 80) -> str:
+    async def logs(self, name: str, tail: int = 300) -> str:
+        """取容器最近日志。
+
+        默认 300 行：NapCat 启动时会打印 WebUI 令牌，早被挤出旧窗口；
+        日志只在内存里，多取一点比「看不到令牌」好。
+        """
         if not name:
             return ""
         try:
@@ -113,3 +118,13 @@ class Docker:
         except DockerError:
             return ""
         return "\n".join(part for part in (out, err) if part)
+
+    async def exec_capture(self, name: str, *args: str, timeout: float = 15.0) -> str:
+        """在容器里执行命令并取 stdout（用于读 WebUI 令牌等）。"""
+        if not name:
+            return ""
+        try:
+            code, out, _ = await self._run("exec", name, *args, timeout=timeout, check=False)
+        except DockerError:
+            return ""
+        return out.strip() if code == 0 else ""

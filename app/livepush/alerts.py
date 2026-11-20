@@ -45,6 +45,8 @@ class AlertManager:
         self.suppressed = 0
         self.last_error = ""
         self.last_sent_at = 0.0
+        self.last_errcode: int | None = None
+        self.last_elapsed_ms = 0
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
@@ -139,9 +141,12 @@ class AlertManager:
 
     async def _send(self, level: str, text: str) -> bool:
         if not self.url:
+            self.last_error = "还没有配置企业微信 webhook 地址"
             return False
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=10.0, trust_env=False)
+        started = time.perf_counter()
+        self.last_errcode = None
         snippet = text if len(text) <= 3000 else text[:3000] + "\n…（已截断）"
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         content = (
@@ -156,13 +161,17 @@ class AlertManager:
             resp = await self._client.post(self.url, json=payload)
             data = resp.json() if resp.content else {}
         except httpx.HTTPError as exc:
+            self.last_elapsed_ms = int((time.perf_counter() - started) * 1000)
             self.last_error = f"网络错误：{exc}"
             logging.getLogger(SELF_LOGGER).warning("告警推送失败：%s", exc)
             return False
         except ValueError:
+            self.last_elapsed_ms = int((time.perf_counter() - started) * 1000)
             self.last_error = "企业微信返回的不是 JSON"
             return False
+        self.last_elapsed_ms = int((time.perf_counter() - started) * 1000)
         errcode = data.get("errcode", 0)
+        self.last_errcode = errcode if isinstance(errcode, int) else None
         if errcode not in (0, None):
             self.last_error = f"errcode={errcode} {data.get('errmsg', '')}"
             logging.getLogger(SELF_LOGGER).warning("告警被企业微信拒绝：%s", self.last_error)
@@ -172,11 +181,24 @@ class AlertManager:
 
     async def send_test(self) -> dict:
         if not self.url:
-            return {"ok": False, "error": "还没有配置企业微信 webhook 地址"}
+            return {
+                "ok": False,
+                "configured": False,
+                "error": "还没有配置企业微信 webhook 地址",
+            }
         ok = await self._send(
             "TEST", "这是一条测试告警：如果你在群里看到它，说明 webhook 配置正确。"
         )
-        return {"ok": ok, "error": self.last_error}
+        if ok:
+            self.sent += 1
+            self.last_sent_at = time.time()
+        return {
+            "ok": ok,
+            "configured": True,
+            "error": self.last_error,
+            "errcode": self.last_errcode,
+            "elapsed_ms": self.last_elapsed_ms,
+        }
 
     def status(self) -> dict[str, Any]:
         masked = ""
@@ -184,6 +206,7 @@ class AlertManager:
             masked = self.url[: self.url.rfind("/") + 1] + "…" if "/" in self.url else "…"
         return {
             "enabled": self.enabled,
+            "configured": bool(self.url),
             "url": masked,
             "min_level": self.min_level,
             "cooldown_sec": self.cooldown_sec,
@@ -192,6 +215,7 @@ class AlertManager:
             "suppressed": self.suppressed,
             "last_sent_at": self.last_sent_at,
             "last_error": self.last_error,
+            "last_errcode": self.last_errcode,
             "queued": self._queue.qsize() if self._queue is not None else 0,
         }
 

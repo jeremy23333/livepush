@@ -20,7 +20,14 @@ from pathlib import Path
 import httpx
 
 from .covers import DEFAULT_UA, CoverCache
-from .parse import RoomSnapshot, parse_room_info_payload, parse_room_init, parse_status_item
+from .parse import (
+    SHORT_LINK_RE,
+    InputRef,
+    RoomSnapshot,
+    parse_input,
+    parse_room_get_info,
+    parse_status_item,
+)
 
 API_BASE = "https://api.live.bilibili.com"
 RISK_CODES = {-352, -412, -509, -799, 412}
@@ -60,6 +67,11 @@ class ResolvedRoom:
     cover_url: str = ""
     area_name: str = ""
     area_parent: str = ""
+    # 这次输入是怎么被理解的，供 UI 展示（否则用户看不出「链接被当成了 UID」）
+    input_kind: str = ""  # uid / room / auto
+    input_number: int = 0
+    resolved_as: str = ""  # room / short / uid
+    ambiguous: dict | None = None  # 同一个数字还是别的 UID 的账号时，附上对照信息
 
     @classmethod
     def from_snapshot(cls, snap: RoomSnapshot) -> "ResolvedRoom":
@@ -79,6 +91,10 @@ class ResolvedRoom:
     @property
     def display_room_id(self) -> int:
         return self.room_id or self.short_id or self.uid
+
+    @property
+    def url(self) -> str:
+        return f"https://live.bilibili.com/{self.display_room_id}"
 
 
 def extract_id(text: str) -> int | None:
@@ -104,6 +120,7 @@ class BiliClient:
         cookie: str = "",
         proxy: str = "",
         timeout: float = 10.0,
+        resolve_timeout: float = 12.0,
         chunk_delay: float = 0.4,
         user_agent: str = "",
         transport: httpx.AsyncBaseTransport | None = None,
@@ -130,6 +147,7 @@ class BiliClient:
             kwargs["transport"] = transport
         self._http = httpx.AsyncClient(base_url=API_BASE, **kwargs)
         self._chunk_delay = max(0.0, chunk_delay)
+        self._resolve_budget = max(1.0, resolve_timeout)
         self._blocked_until = 0.0
         self.risk_reason = ""
         self.covers = CoverCache(covers_dir)
@@ -152,18 +170,32 @@ class BiliClient:
         self._blocked_until = 0.0
         self.risk_reason = ""
 
-    async def _get(self, path: str, params=None, *, stage: str = "") -> dict:
+    async def _get(
+        self,
+        path: str,
+        params=None,
+        *,
+        stage: str = "",
+        timeout: float | None = None,
+        retries: int = 1,
+    ) -> dict:
+        """GET 一个 B 站接口。
+
+        `timeout` 是单次请求超时（默认用客户端配置）；`retries` 是**网络层**重试次数，
+        解析路径上会传 0 —— 多等一轮只会让反向代理先返回 502，掩盖真正的错误。
+        """
         if self.blocked:
             raise BiliRiskControl(f"风控冷却中，剩余 {self.blocked_remaining} 秒：{self.risk_reason}")
         resp: httpx.Response | None = None
         last_exc: Exception | None = None
-        for attempt in range(2):
+        attempts = max(1, retries + 1)
+        for attempt in range(attempts):
             try:
-                resp = await self._http.get(path, params=params)
+                resp = await self._http.get(path, params=params, timeout=timeout)
                 break
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
                 last_exc = exc
-                if attempt == 0:
+                if attempt + 1 < attempts:
                     await asyncio.sleep(0.8)
             except httpx.HTTPError as exc:
                 raise BiliError(f"网络错误：{exc}", stage=stage) from exc
@@ -233,61 +265,144 @@ class BiliClient:
         return result
 
     # ------------------------------------------------------------------ 解析输入
-    async def get_room_info(self, room_or_short_id: int) -> RoomSnapshot:
-        """按房间号/短号解析出完整快照。"""
+    async def _get_room_by_number(self, number: int) -> RoomSnapshot:
+        """按房间号/短号查直播间。
+
+        用 `/room/v1/Room/get_info`（实测同时接受房间号与短号，`7734200` 与 `6`
+        指向同一房间）；`room_init` 已废弃——它对**合法**房间也会返回 `code=60004`，
+        是「添加直播间报 502」的元凶。
+        """
+        stage = "room_id"
         try:
             data = await self._get(
-                "/room/v1/Room/room_init",
-                params={"room_id": room_or_short_id},
-                stage="room_init",
+                "/room/v1/Room/get_info",
+                params={"room_id": number},
+                stage=stage,
+                timeout=6.0,
+                retries=0,
             )
         except BiliError as exc:
-            # -404 / -400 是「房间号不存在」，不该显示成网络 502
-            if exc.code in (-404, -400):
+            # 60004/-404/-400 是「房间不存在」；`get_info` 对不存在的房间返回 code=1
+            # 「未找到该房间」，同样要当成 404，而不是让前端看到 502。
+            missing = exc.code in (60004, -404, -400)
+            if not missing and exc.code == 1 and ("未找到" in str(exc) or "不存在" in str(exc)):
+                missing = True
+            if missing:
                 raise BiliNotFound(
-                    f"B 站没有 ID 为 {room_or_short_id} 的直播间（code={exc.code}）",
-                    stage="room_init",
+                    f"没有找到房间号 {number} 的直播间（B 站 code={exc.code}）",
+                    stage=stage,
                     code=exc.code,
                 ) from exc
             raise
-        room_id, short_id, uid = parse_room_init(data)
-        if not uid and not room_id:
-            raise BiliNotFound(f"找不到房间 {room_or_short_id}", stage="room_init")
-        target_room = room_id or room_or_short_id
+        snap = parse_room_get_info(data)
+        if snap is None:
+            raise BiliNotFound(f"房间号 {number} 没有返回有效的直播间信息", stage=stage)
+        snap.room_id = snap.room_id or number
+        await self._enrich(snap)
+        return snap
 
-        try:
-            payload = await self._get(
-                "/xlive/web-room/v1/index/getInfoByRoom",
-                params={"room_id": target_room},
-                stage="room_info",
-            )
-            snap = parse_room_info_payload(payload)
-        except BiliError:
-            snap = None
-        if snap is not None and snap.uid:
-            if not snap.short_id:
-                snap.short_id = short_id
+    async def _enrich(self, snap: RoomSnapshot) -> RoomSnapshot:
+        """用批量接口补齐昵称/头像/封面/分区（`get_info` 这些字段常为空）。"""
+        if not snap.uid:
             return snap
+        try:
+            snaps = await self.get_status_by_uids([snap.uid], chunk_size=1, chunk_delay=0)
+        except BiliError:
+            return snap
+        full = snaps.get(snap.uid)
+        if full is None:
+            return snap
+        for attr in ("uname", "face", "cover_url", "area_name", "area_parent"):
+            if not getattr(snap, attr, "") and getattr(full, attr, ""):
+                setattr(snap, attr, getattr(full, attr))
+        if not snap.title:
+            snap.title = full.title
+        if not snap.short_id:
+            snap.short_id = full.short_id
+        if not snap.online:
+            snap.online = full.online
+        if not snap.live_status and full.live_status:
+            snap.live_status = full.live_status
+        if not snap.live_started_at:
+            snap.live_started_at = full.live_started_at
+        return snap
 
-        # 退回批量接口按 uid 取
+    async def _snapshot_by_uid(self, uid: int) -> RoomSnapshot:
+        """按 UID 查直播间；该 UID 没有开播房间时给明确的 404 文案。"""
         try:
             snaps = await self.get_status_by_uids([uid], chunk_size=1, chunk_delay=0)
-        except BiliError:
-            snaps = {}
-        if uid in snaps:
-            snap = snaps[uid]
-            snap.short_id = snap.short_id or short_id
-            return snap
+        except BiliRiskControl:
+            raise
+        except BiliError as exc:
+            raise BiliError(f"查询 UID {uid} 失败：{exc}", stage="status", code=exc.code) from exc
+        snap = snaps.get(uid)
+        if snap is None:
+            info = await self.get_master_info(uid)
+            who = f"（{info.get('uname')}）" if info.get("uname") else ""
+            raise BiliNotFound(f"UID {uid}{who} 没有开通直播间", stage="uid")
+        return snap
 
-        # 最差情况：只有昵称与头像
-        info = await self.get_master_info(uid)
-        return RoomSnapshot(
-            uid=uid,
-            room_id=target_room,
-            short_id=short_id,
-            uname=info.get("uname", ""),
-            face=info.get("face", ""),
-        )
+    async def _other_uid_room(self, number: int, room_id: int) -> dict | None:
+        """裸数字命中房间后，检查同一个数字是否还是**另一个** UP 主的 UID。"""
+        try:
+            snaps = await self.get_status_by_uids([number], chunk_size=1, chunk_delay=0)
+        except BiliError:
+            return None
+        other = snaps.get(number)
+        if other is None or other.room_id == room_id:
+            return None
+        return {
+            "uid": number,
+            "uname": other.uname,
+            "room_id": other.room_id,
+            "title": other.title,
+        }
+
+    def _finish(
+        self, snap: RoomSnapshot, ref: InputRef, resolved_as: str, ambiguous: dict | None = None
+    ) -> ResolvedRoom:
+        room = ResolvedRoom.from_snapshot(snap)
+        room.input_kind = ref.kind
+        room.input_number = ref.number
+        room.resolved_as = resolved_as
+        room.ambiguous = ambiguous
+        return room
+
+    async def _expand_short_link(self, url: str) -> str:
+        try:
+            resp = await self._http.get(url, timeout=5.0, follow_redirects=True)
+        except httpx.HTTPError as exc:
+            raise BiliError(
+                f"短链解析失败：{exc}（请打开链接后复制地址栏）", stage="short_link"
+            ) from exc
+        return str(resp.url)
+
+    async def _resolve_by_ref(self, ref: InputRef) -> ResolvedRoom:
+        if ref.kind == "uid":
+            return self._finish(await self._snapshot_by_uid(ref.number), ref, "uid")
+
+        if ref.kind == "room":
+            snap = await self._get_room_by_number(ref.number)
+            resolved_as = "short" if snap.room_id and snap.room_id != ref.number else "room"
+            return self._finish(snap, ref, resolved_as)
+
+        # auto：先按房间号找，找不到再当 UID（裸数字更常见的是房间号）
+        try:
+            snap = await self._get_room_by_number(ref.number)
+        except BiliNotFound as room_exc:
+            try:
+                return self._finish(await self._snapshot_by_uid(ref.number), ref, "uid")
+            except BiliNotFound as uid_exc:
+                raise BiliNotFound(
+                    f"{room_exc}；{uid_exc}", stage="auto", code=room_exc.code
+                ) from uid_exc
+        resolved_as = "short" if snap.room_id and snap.room_id != ref.number else "room"
+        other = await self._other_uid_room(ref.number, snap.room_id)
+        return self._finish(snap, ref, resolved_as, other)
+
+    async def get_room_info(self, room_or_short_id: int) -> RoomSnapshot:
+        """[兼容保留] 按房间号/短号解析；内部已改用 `get_info`。"""
+        return await self._get_room_by_number(room_or_short_id)
 
     async def get_master_info(self, uid: int) -> dict:
         try:
@@ -298,20 +413,29 @@ class BiliClient:
         return {"uname": str(info.get("uname") or ""), "face": str(info.get("face") or "")}
 
     async def resolve(self, text: str) -> ResolvedRoom:
-        """把用户输入解析成直播间：先当 UID，再当房间号。"""
-        number = extract_id(text)
-        if number is None:
-            raise BiliNotFound("无法从输入解析出 UID 或房间号")
+        """把用户输入解析成直播间。
+
+        先给输入定型（`space.` → UID，`live.` → 房间号，裸数字 → 先房间号再 UID），
+        否则 `https://live.bilibili.com/22637261` 会被当成 UID 22637261 的账号。
+        整体限时 `resolve_timeout`（默认 12 秒），避免反向代理先返回 502。
+        """
+        raw = (text or "").strip()
+        if not raw:
+            raise BiliNotFound("请填写 UID、直播间号或直播间链接")
+        if SHORT_LINK_RE.search(raw):
+            raw = await self._expand_short_link(raw)
+        ref = parse_input(raw)
+        if ref is None:
+            raise BiliNotFound(
+                "无法从输入解析出 UID、直播间号或直播间链接"
+                "（支持 space.bilibili.com/<UID>、live.bilibili.com/<房间号>、纯数字）"
+            )
         try:
-            snaps = await self.get_status_by_uids([number], chunk_size=1, chunk_delay=0)
-        except BiliRiskControl:
-            raise
-        except BiliError:
-            snaps = {}
-        if number in snaps:
-            return ResolvedRoom.from_snapshot(snaps[number])
-        snap = await self.get_room_info(number)
-        return ResolvedRoom.from_snapshot(snap)
+            return await asyncio.wait_for(self._resolve_by_ref(ref), timeout=self._resolve_budget)
+        except asyncio.TimeoutError as exc:
+            raise BiliError(
+                f"解析超时：{self._resolve_budget:.0f} 秒内 B 站接口没有响应", stage="resolve"
+            ) from exc
 
     async def diagnose(self, text: str) -> dict:
         """逐项体检「添加直播间」这条链路，给 Web UI / CLI 一个可读结论。"""
@@ -320,18 +444,28 @@ class BiliClient:
         def add(name: str, ok: bool, ms: float = 0.0, detail: str = "") -> None:
             steps.append({"name": name, "ok": ok, "ms": int(ms), "detail": detail})
 
-        number = extract_id(text)
+        raw = (text or "").strip()
+        if SHORT_LINK_RE.search(raw):
+            try:
+                raw = await self._expand_short_link(raw)
+            except BiliError as exc:
+                add("展开短链", False, 0, str(exc))
+                return {"ok": False, "steps": steps, "summary": str(exc)}
+
+        ref = parse_input(raw)
         add(
             "解析输入",
-            number is not None,
+            ref is not None,
             0,
-            f"{text!r} → {number}" if number is not None else "没解析出 UID / 房间号 / 链接",
+            f"{raw!r} → 类型={ref.kind} 数字={ref.number}（{ref.note or ref.source}）"
+            if ref is not None
+            else "没解析出 UID / 房间号 / 链接",
         )
-        if number is None:
+        if ref is None:
             return {
                 "ok": False,
                 "steps": steps,
-                "summary": "输入里没有可识别的 UID、房间号或直播间链接。",
+                "summary": "输入里没有可识别的 UID、直播间号或直播间链接。",
             }
 
         start = time.perf_counter()
@@ -348,74 +482,92 @@ class BiliClient:
                 "summary": "DNS 解析失败：服务器无法解析 api.live.bilibili.com，检查 /etc/resolv.conf 或代理 DNS。",
             }
 
-        start = time.perf_counter()
-        room_id = short_id = uid = 0
-        try:
-            data = await self._get(
-                "/room/v1/Room/room_init", params={"room_id": number}, stage="room_init"
-            )
-            room_id, short_id, uid = parse_room_init(data)
-            add(
-                "HTTP 接口",
-                True,
-                (time.perf_counter() - start) * 1000,
-                f"room_init 成功：room_id={room_id or '?'} uid={uid or '?'}",
-            )
-        except BiliRiskControl as exc:
-            add("HTTP 接口", False, (time.perf_counter() - start) * 1000, f"{exc}（风控，稍后再试）")
-            return {"ok": False, "steps": steps, "summary": f"被 B 站风控：{exc}"}
-        except BiliNotFound as exc:
-            add("HTTP 接口", True, (time.perf_counter() - start) * 1000, str(exc))
-            return {"ok": False, "steps": steps, "summary": f"房间号不存在：{exc}"}
-        except BiliError as exc:
-            add(
-                "HTTP 接口",
-                False,
-                (time.perf_counter() - start) * 1000,
-                f"{exc}（stage={exc.stage or '?'}）",
-            )
-            return {
-                "ok": False,
-                "steps": steps,
-                "summary": "连不上 B 站接口，多半是服务器出网 / 代理 / 防火墙问题（不是房间号的问题）。",
-            }
+        room_snap: RoomSnapshot | None = None
+        room_error = ""
+        if ref.kind in ("room", "auto"):
+            start = time.perf_counter()
+            try:
+                room_snap = await self._get_room_by_number(ref.number)
+                add(
+                    "房间接口 get_info",
+                    True,
+                    (time.perf_counter() - start) * 1000,
+                    f"room_id={room_snap.room_id} uid={room_snap.uid} 《{room_snap.title or '无标题'}》",
+                )
+            except BiliNotFound as exc:
+                room_error = str(exc)
+                add(
+                    "房间接口 get_info",
+                    ref.kind == "uid",
+                    (time.perf_counter() - start) * 1000,
+                    str(exc),
+                )
+            except BiliRiskControl as exc:
+                add(
+                    "房间接口 get_info",
+                    False,
+                    (time.perf_counter() - start) * 1000,
+                    f"{exc}（风控，稍后再试）",
+                )
+                return {"ok": False, "steps": steps, "summary": f"被 B 站风控：{exc}"}
+            except BiliError as exc:
+                add(
+                    "房间接口 get_info",
+                    False,
+                    (time.perf_counter() - start) * 1000,
+                    f"{exc}（stage={exc.stage or '?'}）",
+                )
+                return {
+                    "ok": False,
+                    "steps": steps,
+                    "summary": "连不上 B 站接口，多半是服务器出网 / 代理 / 防火墙问题（不是房间号的问题）。",
+                }
 
-        if not uid:
-            add("批量状态", False, 0, "room_init 没返回 uid")
-            return {"ok": False, "steps": steps, "summary": "房间信息不完整，无法继续。"}
+        uid_snap: RoomSnapshot | None = None
+        if ref.kind in ("uid", "auto"):
+            start = time.perf_counter()
+            try:
+                snaps = await self.get_status_by_uids([ref.number], chunk_size=1, chunk_delay=0)
+                uid_snap = snaps.get(ref.number)
+                add(
+                    "UID 对照",
+                    uid_snap is not None,
+                    (time.perf_counter() - start) * 1000,
+                    f"{ref.number} 作为 UID → {uid_snap.uname}（房间 {uid_snap.room_id or '?'}）"
+                    if uid_snap is not None
+                    else f"{ref.number} 不是开通了直播间的 UID",
+                )
+            except BiliError as exc:
+                add("UID 对照", False, (time.perf_counter() - start) * 1000, str(exc))
 
-        start = time.perf_counter()
-        try:
-            snaps = await self.get_status_by_uids([uid], chunk_size=1, chunk_delay=0)
-            hint = "（该用户当前没有直播间）" if uid not in snaps else ""
-            add("批量状态", True, (time.perf_counter() - start) * 1000, f"收录 {len(snaps)} 个 uid{hint}")
-        except BiliError as exc:
-            add("批量状态", False, (time.perf_counter() - start) * 1000, str(exc))
+        target = room_snap or uid_snap
+        if target is not None and target.uid:
+            start = time.perf_counter()
+            try:
+                snaps = await self.get_status_by_uids([target.uid], chunk_size=1, chunk_delay=0)
+                got = snaps.get(target.uid)
+                add(
+                    "批量状态",
+                    got is not None,
+                    (time.perf_counter() - start) * 1000,
+                    f"uid={target.uid} → {got.uname if got else '未收录（该 UID 当前没有直播间）'}",
+                )
+            except BiliError as exc:
+                add("批量状态", False, (time.perf_counter() - start) * 1000, str(exc))
 
-        start = time.perf_counter()
-        try:
-            payload = await self._get(
-                "/xlive/web-room/v1/index/getInfoByRoom",
-                params={"room_id": room_id or number},
-                stage="room_info",
+        ok = bool(room_snap or uid_snap)
+        if room_snap and uid_snap and room_snap.room_id != uid_snap.room_id:
+            summary = (
+                f"{ref.number} 既是直播间 {room_snap.room_id}（{room_snap.uname or '?'} 的），"
+                f"也是 UID {ref.number}（{uid_snap.uname or '?'}，房间 {uid_snap.room_id}）。"
+                "想让哪个生效就换写法：加直播间用 live.bilibili.com/<房间号>，加 UP 主用 space.bilibili.com/<UID>。"
             )
-            snap = parse_room_info_payload(payload)
-            add(
-                "房间详情",
-                bool(snap and snap.uid),
-                (time.perf_counter() - start) * 1000,
-                f"{snap.title or '无标题'}（{snap.uname or '?'}）" if snap and snap.uid else "解析不到房间详情",
-            )
-        except BiliError as exc:
-            add("房间详情", False, (time.perf_counter() - start) * 1000, str(exc))
-
-        ok = all(step["ok"] for step in steps)
-        if ok:
-            summary = f"这条链路通了：uid={uid}，room_id={room_id or '?'}。"
-        elif any(step["name"] == "房间详情" and not step["ok"] for step in steps):
-            summary = "房间能定位，但详情接口失败——多半是 B 站偶发错误或被临时限制，重试一次即可。"
+        elif room_snap is not None:
+            summary = f"识别为直播间 {room_snap.room_id}（{room_snap.uname or '?'}），这条链路通了。"
+        elif uid_snap is not None:
+            summary = f"识别为 UID {ref.number}（{uid_snap.uname}），直播间 {uid_snap.room_id or '?'}。"
         else:
-            summary = "有步骤失败，看上面第一个 FAIL 项。"
+            summary = room_error or "没有找到对应的直播间或 UID。"
         return {"ok": ok, "steps": steps, "summary": summary}
 
     async def aclose(self) -> None:

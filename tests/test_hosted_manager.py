@@ -48,8 +48,11 @@ class FakeDocker:
     async def rm(self, name) -> None:
         self.state_name = ""
 
-    async def logs(self, name, tail: int = 80) -> str:
-        return "container log line"
+    async def logs(self, name, tail: int = 300) -> str:
+        return getattr(self, "log_text", "container log line")
+
+    async def exec_capture(self, name, *args, timeout: float = 15.0) -> str:
+        return ""
 
 
 async def setup(tmp_path, monkeypatch, *, backend: str = "napcat", docker_up: bool = True):
@@ -201,3 +204,50 @@ async def test_remove_drops_engine_and_container(tmp_path, monkeypatch):
     assert fake.state_name == ""
     status = await mgr.hosted_manager.status(bot_id)
     assert status["installed"] is False
+
+
+@pytest.mark.asyncio
+async def test_status_reads_webui_token_from_workdir(tmp_path, monkeypatch):
+    """NapCat 的 webui.json 挂在 <workdir>/config 下，宿主机应能直接读到令牌。"""
+    from livepush.qq.hosted import webui
+
+    bot_id, fake = await setup(tmp_path, monkeypatch)
+    job = mgr.hosted_manager.install(bot_id)
+    await wait_job(job)
+
+    async with session_scope() as session:
+        engine = (
+            await session.execute(
+                select(HostedEngine).where(HostedEngine.bot_connection_id == bot_id)
+            )
+        ).scalar_one()
+        install_dir = Path(engine.install_dir)
+        port = engine.host_webui_port
+    (install_dir / "config").mkdir(parents=True, exist_ok=True)
+    (install_dir / "config" / "webui.json").write_text(
+        '{"host": "0.0.0.0", "port": 6099, "token": "tok-abcdef123"}', encoding="utf-8"
+    )
+    webui._cache.clear()
+
+    status = await mgr.hosted_manager.status(bot_id, host="127.0.0.1")
+    assert status["webui"]["token"] == "tok-abcdef123"
+    assert status["webui"]["source"] == "config"
+    assert status["webui"]["port"] == port  # 对外端口以宿主机映射为准
+
+    light = await mgr.hosted_manager.webui_token(bot_id)
+    assert light["token"] == "tok-abcdef123"
+
+
+@pytest.mark.asyncio
+async def test_status_falls_back_to_container_log_for_token(tmp_path, monkeypatch):
+    from livepush.qq.hosted import webui
+
+    bot_id, fake = await setup(tmp_path, monkeypatch)
+    job = mgr.hosted_manager.install(bot_id)
+    await wait_job(job)
+    fake.log_text = "启动完成\nWebUI 令牌: token=logtok-987654\n监听 6099"
+    webui._cache.clear()
+
+    status = await mgr.hosted_manager.status(bot_id, host="127.0.0.1")
+    assert status["webui"]["token"] == "logtok-987654"
+    assert status["webui"]["source"] == "logs"

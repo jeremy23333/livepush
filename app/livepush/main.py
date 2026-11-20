@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -158,6 +159,27 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="livepush", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.middleware("http")
+    async def timing(request: Request, call_next):
+        """给每个响应加耗时头，并给 /api/ 记一行访问日志。
+
+        「添加直播间 502」排查时，这行日志能区分「应用 0.3 秒就返回了错误」
+        与「应用卡了 60 秒、反向代理先掐断」。
+        """
+        started = time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        response.headers["X-Livepush-Elapsed"] = str(elapsed_ms)
+        path = request.url.path
+        if path.startswith("/static/"):
+            # 让浏览器/Cloudflare 每次都回来问一下，避免旧 app.js 被长期缓存
+            response.headers["Cache-Control"] = "no-cache"
+        if path.startswith("/api/") and not path.endswith("/stream"):
+            logging.getLogger("livepush.api").info(
+                "%s %s %s %dms", request.method, path, response.status_code, elapsed_ms
+            )
+        return response
 
     app.include_router(routes_api.public)
     app.include_router(routes_api.router)

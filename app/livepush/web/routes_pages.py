@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -76,6 +78,13 @@ async def page_hosted_ui(request: Request, bot_id: int):
     """内嵌托管协议端的 WebUI（同源反向代理，见 web/proxy.py）。"""
     if redirect := _guard(request):
         return redirect
+    from ..qq.hosted import hosted_manager
+
+    webui: dict = {"token": "", "source": "", "port": 0}
+    with contextlib.suppress(Exception):
+        webui = await hosted_manager.webui_token(bot_id)
     return templates.TemplateResponse(
-        request, "hosted_ui.html", {"active": "qq", "bot_id": bot_id}
+        request,
+        "hosted_ui.html",
+        {"active": "qq", "bot_id": bot_id, "webui": webui},
     )

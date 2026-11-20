@@ -8,14 +8,18 @@
 
 <div class="panel">
   <h2>添加直播间</h2>
-  <p class="hint">支持 UID、房间号、短号、`live.bilibili.com/xxx` 链接。先预览再确认，避免加错人。</p>
+  <p class="hint">
+    <code>space.bilibili.com/&lt;UID&gt;</code> 按 UID 解析，<code>live.bilibili.com/&lt;房间号&gt;</code> 按直播间号解析；
+    纯数字先当房间号、找不到再当 UID（B 站的房间号和 UID 可能是同一个数字，所以链接优先）。
+  </p>
   <div class="row">
-    <input id="add-query" placeholder="例如 672328094 或 https://live.bilibili.com/22637261">
+    <input id="add-query" placeholder="例如 https://live.bilibili.com/22637261 或 672328094">
     <label class="fixed small" style="display:flex;align-items:center;gap:6px;min-width:auto">
       <input type="checkbox" id="add-notify" style="width:auto"> 正在直播则立即推送
     </label>
     <button class="fixed primary" id="btn-resolve">解析</button>
   </div>
+  <div id="resolve-error" class="inline-error" hidden></div>
   <div id="preview" style="margin-top:12px" hidden></div>
 </div>
 

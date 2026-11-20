@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from livepush.alerts import AlertManager, normalize
@@ -89,7 +90,58 @@ async def test_send_test_without_url():
     manager.configure(enabled=True, url="", min_level="ERROR", cooldown_sec=60, max_per_minute=5)
     result = await manager.send_test()
     assert result["ok"] is False
+    assert result["configured"] is False
     assert "webhook" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_send_test_counts_and_reports_errcode():
+    """测试按钮走的是同步 send_test：要计数、要回传 errcode，UI 才能显示结果。"""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
+
+    manager = AlertManager()
+    manager.configure(
+        enabled=True,
+        url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+        min_level="ERROR",
+        cooldown_sec=60,
+        max_per_minute=5,
+    )
+    manager._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await manager.send_test()
+    assert result["ok"] is True
+    assert result["configured"] is True
+    assert result["errcode"] == 0
+    assert result["elapsed_ms"] >= 0
+    assert manager.sent == 1
+    assert manager.last_sent_at > 0
+    assert calls and "webhook" in calls[0]
+    await manager._client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_send_test_reports_business_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"errcode": 45009, "errmsg": "api freq out of limit"})
+
+    manager = AlertManager()
+    manager.configure(
+        enabled=True,
+        url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+        min_level="ERROR",
+        cooldown_sec=60,
+        max_per_minute=5,
+    )
+    manager._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await manager.send_test()
+    assert result["ok"] is False
+    assert result["errcode"] == 45009
+    assert "45009" in result["error"]
+    await manager._client.aclose()
 
 
 def test_status_masks_url():

@@ -141,8 +141,8 @@ bash scripts/bootstrap.sh --with-sign
 - **日志保留**：设置页配「保留 N 天」，每天定时清理轮转文件；`app.log`、`service.log` 永不删。命令：`python -m livepush logs list|cleanup`。
 - **故障告警**：填企业微信群机器人 webhook，按等级 + 冷却 + 每分钟上限推送；带「发送测试告警」按钮。
 - **掉线探测**：QQ 被风控踢下线（WS 还连着）时，靠 `get_login_info` 真实往返、心跳 `good`、下线 notice、容器日志关键词综合判断，超过宽限期才告警。
-- **添加直播间报 502**：`python -m livepush bili "<房间号或链接>"` 逐层定位；页面现在会显示失败阶段（DNS/接口/业务码/房间不存在）。
-- **内嵌 WebUI**：托管模式的 NapCat WebUI 可在 livepush 内打开（`/hosted/<bot_id>`），不需要再加端口或隧道路由。
+- **添加直播间报 502**：B 站允许「房间号」和「UID」是同一个数字，旧版会把 `live.bilibili.com/<n>` 当 UID 查；2.1.1 起输入会先定型（`space.` → UID、`live.` → 房间号、裸数字先房间号后 UID），页面显示「识别为：直播间号 / 短号 / UID」。仍失败时跑 `python -m livepush bili "<房间号或链接>"` 逐层定位；详见 [`docs/OPERATIONS.md`](docs/OPERATIONS.md#6-502--添加直播间失败怎么查)。
+- **内嵌 WebUI**：托管模式的 NapCat WebUI 可在 livepush 内打开（`/hosted/<bot_id>`），不需要再加端口或隧道路由；令牌会在「托管」弹窗里显示，可一键复制或带令牌打开。
 
 ---
 
@@ -158,7 +158,8 @@ bash scripts/bootstrap.sh --with-sign
 | 手机扫码后 PC 端 QQ 掉线 | NTQQ PC 协议会互相挤占，扫码期间不要同时登 PC QQ |
 | 机器人离线时开播了 | 任务会留在 outbox，机器人恢复后补发；超过 6 小时的旧下播事件直接跳过 |
 | 想看环境到底哪坏了 | `python -m livepush doctor`，或在设置页点「环境自检」 |
-| 添加直播间提示 502 / 找不到房间 | 页面详情会写失败阶段；再跑 `python -m livepush bili "<链接或房间号>"` 逐层定位（解析/DNS/接口/业务码/房间详情） |
+| 添加直播间提示 502 / 找不到房间 | 先看页面识别成什么（直播间号 / 短号 / UID）；仍失败再跑 `python -m livepush bili "<链接或房间号>"` 逐层定位（解析/DNS/接口/业务码/房间详情） |
+| 企业微信「发送测试告警」没反应 | 确认地址已点「保存设置」；浏览器若加载的是旧 JS，强刷一次（静态资源已带版本号）。结果会显示在按钮下方 |
 | 企业微信收不到告警 | 检查 `alert_enabled` 与 webhook 地址；点「发送测试告警」看返回的错误；企业微信限 20 条/分钟，超了会被丢弃 |
 | `data/logs/` 越来越大 | 设置页「日志与清理」配保留天数（默认 14）；`python -m livepush logs list` 看是谁占的 |
 | QQ 被踢了但没有任何提示 | 设置页「QQ 掉线探测」把宽限期调小；告警通道是否配了；`/api/bots` 的 `health` 里能看到判据 |

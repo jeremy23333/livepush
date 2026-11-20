@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -128,7 +129,90 @@ def parse_room_info_payload(payload: dict) -> RoomSnapshot | None:
 
 
 def parse_room_init(data: dict) -> tuple[int, int, int]:
-    """`room_init` 返回 (room_id, short_id, uid)。"""
+    """`room_init` 返回 (room_id, short_id, uid)。
+
+    注意：实测该接口对**合法**房间也可能返回 `code=60004`，B 站主链路已改用
+    `parse_room_get_info`（`/room/v1/Room/get_info`），这里只留给旧调用与测试。
+    """
     if not isinstance(data, dict):
         return 0, 0, 0
     return _as_int(data.get("room_id")), _as_int(data.get("short_id")), _as_int(data.get("uid"))
+
+
+def parse_room_get_info(data: dict) -> RoomSnapshot | None:
+    """解析 `/room/v1/Room/get_info` 的返回。
+
+    该接口实测**同时接受房间号与短号**（`room_id=7734200` 与 `room_id=6` 指向同一房间），
+    且免登录可用，是「按房间号添加直播间」的主链路。
+    """
+    if not isinstance(data, dict):
+        return None
+    room_id = _as_int(data.get("room_id"))
+    uid = _as_int(data.get("uid"))
+    if not room_id and not uid:
+        return None
+    cover = _as_str(data.get("user_cover")) or _as_str(data.get("cover")) or _as_str(data.get("keyframe"))
+    return RoomSnapshot(
+        uid=uid,
+        room_id=room_id,
+        short_id=_as_int(data.get("short_id")),
+        uname=_as_str(data.get("uname")),
+        face=_as_str(data.get("face")),
+        title=_as_str(data.get("title")),
+        area_name=_as_str(data.get("area_name")),
+        area_parent=_as_str(data.get("parent_area_name")),
+        cover_url=cover,
+        live_status=_as_int(data.get("live_status")),
+        live_started_at=normalize_live_time(data.get("live_time")),
+        online=_as_int(data.get("online")),
+        raw=data,
+    )
+
+
+# --------------------------------------------------------------------- 输入定型
+@dataclass(slots=True)
+class InputRef:
+    """用户输入定型结果。
+
+    B 站允许「房间号」与「UID」是同一个数字（例如 22637261 既是某个直播间，
+    也是另一个 UP 主的 UID），所以必须先看清输入形态再决定查哪个接口：
+    `space.bilibili.com/<n>` 只能是 UID，`live.bilibili.com/<n>` 只能是房间号，
+    裸数字才需要「先房间号、再 UID」的兜底。
+    """
+
+    kind: str  # "uid" | "room" | "auto"
+    number: int
+    source: str  # 命中的规则，便于 UI / 诊断展示
+    note: str = ""
+
+
+_SPACE_RE = re.compile(r"space\.bilibili\.com/(?:#/)?(\d+)", re.I)
+_ROOM_PARAM_RE = re.compile(r"live\.bilibili\.com/[^\s]*?[?&]room_id=(\d+)", re.I)
+_LIVE_PATH_RE = re.compile(r"live\.bilibili\.com/(?:h5/|blanc/|blackboard/)?(\d+)", re.I)
+_UID_PREFIX_RE = re.compile(r"(?:uid|用户\s*id|用户\s*号)\s*[:=：]?\s*(\d+)", re.I)
+_ROOM_PREFIX_RE = re.compile(r"(?:房间号|直播间号|短号|room(?:_?id)?)\s*[:=：]?\s*(\d+)", re.I)
+_BARE_RE = re.compile(r"^(\d+)$")
+SHORT_LINK_RE = re.compile(r"https?://(?:b23\.tv|bili2233\.cn)/\S+", re.I)
+
+
+def parse_input(text: str) -> InputRef | None:
+    """把用户输入定成 `uid` / `room` / `auto` 三类之一；无法识别返回 None。"""
+    if not text:
+        return None
+    raw = text.strip()
+    if not raw:
+        return None
+
+    if match := _ROOM_PARAM_RE.search(raw):
+        return InputRef("room", int(match.group(1)), "room_id 参数", "链接里带 room_id，按直播间号解析")
+    if match := _LIVE_PATH_RE.search(raw):
+        return InputRef("room", int(match.group(1)), "live.bilibili.com", "直播间链接，按直播间号解析")
+    if match := _SPACE_RE.search(raw):
+        return InputRef("uid", int(match.group(1)), "space.bilibili.com", "个人空间链接，按 UID 解析")
+    if match := _UID_PREFIX_RE.search(raw):
+        return InputRef("uid", int(match.group(1)), "uid 前缀", "带 uid 标记，按 UID 解析")
+    if match := _ROOM_PREFIX_RE.search(raw):
+        return InputRef("room", int(match.group(1)), "房间号前缀", "带房间号标记，按直播间号解析")
+    if match := _BARE_RE.match(raw):
+        return InputRef("auto", int(match.group(1)), "纯数字", "纯数字：先按直播间号找，找不到再当 UID")
+    return None

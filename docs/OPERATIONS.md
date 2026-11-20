@@ -168,18 +168,37 @@ python -m livepush logs cleanup              # 按设置里的天数真删
 
 ## 6. 502 / 添加直播间失败怎么查
 
+### 6.1 为什么以前一定 502：输入被当成 UID
+
+B 站允许「直播间号」和「UID」是**同一个数字**，例如 `22637261` 既是一个直播间，也是另一个 UP 主的 UID（`hrdcbuub`）。2.1.0 及更早的版本只从输入里抠数字、先按 UID 查，于是：
+
+| 你输入 | 旧行为 | 现在 |
+| --- | --- | --- |
+| `https://live.bilibili.com/22637261` | 当成 UID 22637261，加进别人的房间 | 识别为**直播间号**，查 `/room/v1/Room/get_info` |
+| `https://space.bilibili.com/672328094` | 当作 UID，正确 | 识别为 **UID**，走批量接口 |
+| `https://live.bilibili.com/6` | 当作 UID 6 | 识别为**短号**，返回真实房间 7734200 |
+| `672328094`（裸数字） | 先 UID | 先按房间号；不是房间再按 UID；两者都命中时页面给黄色提醒 |
+| `https://b23.tv/xxxx` | 解析失败 | 自动跟随跳转后再定型 |
+
+另一个坑：`room/v1/Room/room_init` 对**合法**房间也会返回 `code=60004`，旧代码把它当异常 → 路由映射成 502。新版本已不再用 `room_init` 做主链路。
+
+### 6.2 排查顺序
+
 1. **页面上的详情**现在会区分阶段，例如：
-   - `B 站没有 ID 为 … 的直播间（code=-404）` → 输入错了或房间已注销；
-   - `网络错误（stage=批量状态）` → 本机到 B 站不通/超时/代理配置问题；
-   - `HTTP 502` 且详情是 `code=…` → B 站业务码（风控或参数）。
+   - `没有找到房间号 … 的直播间（B 站 code=1）` → 输入错了或房间已注销（404，不再是 502）；
+   - `UID …（昵称） 没有开通直播间` → 这个 UID 没开直播间；
+   - `网络错误（接口=…）` → 本机到 B 站不通/超时/代理配置问题；
+   - `解析超时：12 秒内 B 站接口没有响应` → 反向代理/机场把请求拖死了。
 2. **服务器上一条命令定位**：
    ```bash
    python -m livepush bili "https://live.bilibili.com/22637261"
    ```
-   会按「解析输入 → DNS → HTTP 接口 → 批量状态 → 房间详情」逐步打印 OK/FAIL 与耗时。
-3. Web UI 也有对应接口：`GET /api/diag/bili?query=...`（需登录）。
-4. 这条路径现在会写 `livepush.api` 日志并带 traceback（非 404 的情况）：
+   会按「展开短链 → 解析输入（类型/数字）→ DNS → 房间接口 → UID 对照 → 批量状态」逐步打印 OK/FAIL 与耗时，并在结论里说明「同一个数字既是直播间 X 也是 UID Y」。
+3. Web UI 也有对应接口：`GET /api/diag/bili?query=...`；连不上时先点「网络诊断」（`GET /api/diag/network`，DNS→TCP 443→TLS→HTTP）。
+4. 如果页面上的报错仍然是纯 `HTTP 50x`（没有 detail），说明响应不是 livepush 返回的 JSON——多半是 nginx/Cloudflare 在应用返回前就已超时：
    ```bash
-   grep 'livepush.api' data/logs/app.log | tail -n 20
+   grep 'livepush.api' data/logs/app.log | tail -n 20   # 看有没有对应请求的记录
+   curl -sS -D- -o /dev/null http://127.0.0.1:8787/healthz   # 直连应用是否正常
    ```
+   每条响应都会带 `X-Livepush-Elapsed: 123ms` 头，Cloudflare 的超时通常在日志里表现为「没有这条请求」。
 5. 如果服务器在墙内直连 B 站不稳：设置页填 `bili_proxy`（如 `http://127.0.0.1:7890`）。客户端已改为 `trust_env=False`，**不会**被系统 `HTTP_PROXY` 环境影响，只用你填的代理。

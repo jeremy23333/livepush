@@ -1,5 +1,34 @@
 # 变更记录
 
+## 2.1.1（2026-11-20）
+
+主题：**修掉「添加直播间 502」的真根因**（输入被当成 UID），并补上企微测试告警与 NapCat WebUI 令牌的可操作性。
+
+### 修复
+
+- **添加直播间 502 的根因**：`extract_id()` 只抠数字、不区分形态，`https://live.bilibili.com/22637261` 被当作 **UID 22637261** 查询（命中另一个 UP 主的房间）；号码不是 UID 时又走 `room_init`，而该接口对**合法房间**也返回 `code=60004`，最终被路由映射成 502。现在：
+  - 输入先定型（`space.bilibili.com/<n>` → UID、`live.bilibili.com/<n>` 或 `?room_id=` → 房间号、`uid:` / `房间号:` 前缀、裸数字 → 先房间号后 UID），新增 `InputRef` / `parse_input()`。
+  - 房间号改用 `/room/v1/Room/get_info`（实测同时接受房间号与短号，`7734200` 与 `6` 指向同一房间），`room_init` 退出主链路。
+  - 解析响应新增 `input_kind` / `input_number` / `resolved_as`（room/short/uid）/ `ambiguous`；页面会显示「识别为：直播间号 / 短号 / UID」，裸数字同时命中别的 UID 时给黄色提醒，建议改用 `space.bilibili.com/<数字>`。
+  - 解析整体限时 12 秒（`resolve_timeout`），单请求 6 秒、不重试，避免反向代理先返回 502；超时给「解析超时」而不是 502。
+- **`b23.tv` / `bili2233.cn` 短链**：自动跟随跳转后再定型，失败提示「打开链接后复制地址栏」。
+- **企业微信测试告警按钮**：`send_test()` 之前不计数、不回传结果；现在返回 `configured/errcode/elapsed_ms`，`sent` 计数正常。页面按钮加 `try/catch`、发送中置灰、结果写回「最近一次测试」；地址还没保存时先提示「先点保存设置」。
+- **非 JSON 的 5xx 不再只显示「HTTP 502」**：`LP.api()` 先读文本再解析，错误提示带上状态码、`server`、`X-Livepush-Elapsed` 耗时与正文片段，并 `console.error` 完整响应。
+- **静态资源缓存**：`app.js` / `app.css` 加 `?v={{ version }}`，升级后不会被 Cloudflare/浏览器旧缓存挡住新按钮；`/static/` 响应带 `Cache-Control: no-cache`。
+
+### 新增
+
+- **NapCat WebUI 令牌自动读取**：`<workdir>/config/webui.json`（容器内 `/app/napcat/config/webui.json` 的挂载）→ `docker exec cat` → 启动日志正则，三层回退，10 秒缓存；托管弹窗显示令牌、「复制」「带令牌打开」，内嵌页 iframe 自动带 `?token=`。
+- 托管容器日志默认从 60 行放宽到 **300 行**（NapCat 令牌在启动早期）。
+- `GET /api/diag/network`：DNS → TCP 443 → TLS → HTTP 四步网络体检（`/rooms` 页「网络诊断」按钮），用于区分「本机连不上 B 站」与「B 站接口报错」。
+- 请求耗时：所有响应带 `X-Livepush-Elapsed`，`/api/*` 访问日志记一行「路径 状态 耗时」。
+
+### 文档
+
+- [`docs/OPERATIONS.md`](OPERATIONS.md) 增「为什么添加直播间会 502」小节与输入形态对照表。
+- [`docs/HOSTED.md`](HOSTED.md) 增「WebUI 令牌怎么来的」三层说明。
+- `README.md` FAQ 补「添加直播间报错怎么排查」。
+
 ## 2.1.0（2026-11-20）
 
 主题：**可观测性与运维**——实时日志、故障告警、日志自动清理、QQ 掉线探测、绑定级测试推送、内嵌托管 WebUI，外加 502 错误定位与直播时长精度。

@@ -10,9 +10,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
+import ssl
 import time
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -261,18 +264,24 @@ async def api_rooms() -> dict:
     return {"ok": True, "rooms": [_room(r, counts.get(r.id, 0)) for r in rooms]}
 
 
-def _bili_detail(exc: BiliError) -> str:
+def _bili_detail(exc: BiliError, elapsed: float = 0.0) -> str:
     """把分阶段错误翻成用户能看懂的一句话（前端直接展示 detail）。"""
     names = {
-        "room_init": "查询房间号",
+        "room_id": "按房间号查询",
+        "room_init": "查询房间号（旧接口）",
         "room_info": "取房间详情",
         "status": "批量查询直播状态",
         "master_info": "取主播信息",
+        "uid": "按 UID 查询",
+        "resolve": "解析输入",
+        "short_link": "展开短链",
     }
     where = names.get(exc.stage or "", exc.stage or "")
     suffix = ""
     if exc.code is not None:
         suffix = f"（B 站 code={exc.code}）"
+    if elapsed >= 0.1:
+        suffix += f" · 用时 {elapsed:.1f}s"
     return f"{where}失败：{exc}{suffix}" if where else f"{exc}{suffix}"
 
 
@@ -295,17 +304,18 @@ async def api_rooms_resolve(body: ResolveBody) -> dict:
     client = engine.bili
     if client is None:
         raise HTTPException(503, "采集客户端尚未初始化")
+    started = time.perf_counter()
     try:
         resolved = await client.resolve(body.query)
     except BiliRiskControl as exc:
         _log_bili_error("解析直播间", body.query, exc)
-        raise HTTPException(429, _bili_detail(exc)) from exc
+        raise HTTPException(429, _bili_detail(exc, time.perf_counter() - started)) from exc
     except BiliNotFound as exc:
         _log_bili_error("解析直播间", body.query, exc)
-        raise HTTPException(404, _bili_detail(exc)) from exc
+        raise HTTPException(404, _bili_detail(exc, time.perf_counter() - started)) from exc
     except BiliError as exc:
         _log_bili_error("解析直播间", body.query, exc)
-        raise HTTPException(502, _bili_detail(exc)) from exc
+        raise HTTPException(502, _bili_detail(exc, time.perf_counter() - started)) from exc
     return {
         "ok": True,
         "room": {
@@ -318,7 +328,11 @@ async def api_rooms_resolve(body: ResolveBody) -> dict:
             "area": f"{resolved.area_parent} / {resolved.area_name}".strip(" /"),
             "live_status": resolved.live_status,
             "live": resolved.live_status == 1,
-            "url": f"https://live.bilibili.com/{resolved.display_room_id}",
+            "url": resolved.url,
+            "input_kind": resolved.input_kind,
+            "input_number": resolved.input_number,
+            "resolved_as": resolved.resolved_as,
+            "ambiguous": resolved.ambiguous,
         },
     }
 
@@ -329,17 +343,18 @@ async def api_rooms_create(body: RoomCreateBody) -> dict:
     client = engine.bili
     if client is None:
         raise HTTPException(503, "采集客户端尚未初始化")
+    started = time.perf_counter()
     try:
         resolved = await client.resolve(body.query)
     except BiliRiskControl as exc:
         _log_bili_error("添加直播间", body.query, exc)
-        raise HTTPException(429, _bili_detail(exc)) from exc
+        raise HTTPException(429, _bili_detail(exc, time.perf_counter() - started)) from exc
     except BiliNotFound as exc:
         _log_bili_error("添加直播间", body.query, exc)
-        raise HTTPException(404, _bili_detail(exc)) from exc
+        raise HTTPException(404, _bili_detail(exc, time.perf_counter() - started)) from exc
     except BiliError as exc:
         _log_bili_error("添加直播间", body.query, exc)
-        raise HTTPException(502, _bili_detail(exc)) from exc
+        raise HTTPException(502, _bili_detail(exc, time.perf_counter() - started)) from exc
 
     async with session_scope() as session:
         exists = (
@@ -452,7 +467,7 @@ async def api_logs_cleanup(dry_run: bool = False) -> dict:
 
 @router.get("/diag/bili")
 async def api_diag_bili(query: str) -> dict:
-    """逐项体检「添加直播间」链路（DNS → 接口 → 批量 → 详情）。"""
+    """逐项体检「添加直播间」链路（输入定型 → 房间接口 → UID 对照 → 批量状态）。"""
     client = get_engine().bili
     if client is None:
         raise HTTPException(503, "采集客户端尚未初始化")
@@ -460,6 +475,97 @@ async def api_diag_bili(query: str) -> dict:
         return await client.diagnose(query)
     except BiliError as exc:
         return {"ok": False, "steps": [], "summary": _bili_detail(exc)}
+
+
+@router.get("/diag/network")
+async def api_diag_network() -> dict:
+    """只体检「服务器到 B 站」的网络链路，用来把 502 分成网络问题还是应用问题。"""
+    host = "api.live.bilibili.com"
+    steps: list[dict] = []
+
+    def add(name: str, ok: bool, ms: float = 0.0, detail: str = "") -> None:
+        steps.append({"name": name, "ok": ok, "ms": int(ms), "detail": detail})
+
+    start = time.perf_counter()
+    ips: list[str] = []
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, 443, 0, socket.SOCK_STREAM)
+        ips = sorted({item[4][0] for item in infos})
+        add("DNS", True, (time.perf_counter() - start) * 1000, "、".join(ips[:4]) or f"{len(infos)} 条记录")
+    except OSError as exc:
+        add("DNS", False, (time.perf_counter() - start) * 1000, str(exc))
+        return {
+            "ok": False,
+            "steps": steps,
+            "summary": "DNS 解析失败：检查 /etc/resolv.conf、云厂商 DNS 或容器内 DNS。",
+        }
+
+    start = time.perf_counter()
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, 443), timeout=5.0)
+        writer.close()
+        await writer.wait_closed()
+        add("TCP 443", True, (time.perf_counter() - start) * 1000, "握手成功")
+    except (OSError, asyncio.TimeoutError) as exc:
+        add("TCP 443", False, (time.perf_counter() - start) * 1000, f"{type(exc).__name__}: {exc}")
+        return {
+            "ok": False,
+            "steps": steps,
+            "summary": "TCP 连不上 443：服务器出网被拦（安全组 / 防火墙 / 出口代理）。",
+        }
+
+    start = time.perf_counter()
+    tls_version = ""
+    try:
+        context = ssl.create_default_context()
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, 443, ssl=context, server_hostname=host), timeout=8.0
+        )
+        ssl_obj = writer.get_extra_info("ssl_object")
+        tls_version = getattr(ssl_obj, "version", lambda: "")() or ""
+        writer.close()
+        await writer.wait_closed()
+        add("TLS", True, (time.perf_counter() - start) * 1000, tls_version or "握手成功")
+    except (OSError, asyncio.TimeoutError) as exc:
+        add("TLS", False, (time.perf_counter() - start) * 1000, f"{type(exc).__name__}: {exc}")
+        return {
+            "ok": False,
+            "steps": steps,
+            "summary": "TLS 握手失败：检查系统时间、CA 证书（ca-certificates）或中间人代理。",
+        }
+
+    async with session_scope() as session:
+        cfg = await load_app_config(session)
+    start = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(8.0, connect=5.0),
+            trust_env=False,
+            proxy=(cfg.bili_proxy or None),
+        ) as cl:
+            resp = await cl.get(f"https://{host}/room/v1/Room/get_info", params={"room_id": 6})
+        ok = resp.status_code < 500
+        add(
+            "HTTP 接口",
+            ok,
+            (time.perf_counter() - start) * 1000,
+            f"HTTP {resp.status_code}，{len(resp.content)} 字节",
+        )
+    except httpx.HTTPError as exc:
+        add("HTTP 接口", False, (time.perf_counter() - start) * 1000, f"{type(exc).__name__}: {exc}")
+        return {
+            "ok": False,
+            "steps": steps,
+            "summary": "网络能通，但 HTTP 请求失败：多半是代理配置（bili_proxy）或 B 站临时限制。",
+        }
+
+    ok = all(step["ok"] for step in steps)
+    if ok:
+        proxy_hint = f"（走代理 {cfg.bili_proxy}）" if cfg.bili_proxy else "（直连，未使用代理）"
+        summary = f"服务器到 B 站网络正常{proxy_hint}。若这时添加直播间仍失败，就是接口/输入的问题，用『诊断输入』查。"
+    else:
+        summary = "有步骤失败，按第一个 FAIL 项排查。"
+    return {"ok": ok, "steps": steps, "summary": summary}
 
 
 @router.patch("/rooms/{room_id}")
@@ -818,7 +924,13 @@ async def api_alerts_test() -> dict:
     from ..alerts import alert_manager
 
     result = await alert_manager.send_test()
-    return {"ok": bool(result.get("ok")), "error": result.get("error", "")}
+    return {
+        "ok": bool(result.get("ok")),
+        "error": result.get("error", ""),
+        "configured": bool(result.get("configured")),
+        "errcode": result.get("errcode"),
+        "elapsed_ms": result.get("elapsed_ms", 0),
+    }
 
 
 class SettingsBody(BaseModel):

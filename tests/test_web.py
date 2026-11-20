@@ -183,9 +183,19 @@ def test_new_ops_endpoints_require_auth(client: TestClient):
         "/api/logs/files",
         "/api/alerts/state",
         "/api/diag/bili?query=1",
+        "/api/diag/network",
         "/api/hosted/backends",
     ):
         assert client.get(path).status_code == 401, path
+
+
+def test_static_assets_are_versioned(client: TestClient):
+    login(client)
+    html = client.get("/qq").text
+    assert "/static/app.js?v=" in html
+    assert "/static/app.css?v=" in html
+    # 版本号进 query 才能击穿 Cloudflare/浏览器的旧 JS 缓存
+    assert "?v=" + html.split("/static/app.js?v=")[1].split('"')[0]
 
 
 def test_logs_cleanup_requires_csrf(client: TestClient):
