@@ -244,3 +244,21 @@ def test_extract_id_variants():
 def test_parse_handles_non_dict_data(tmp_path):
     # data 为 null 时不应崩
     assert json.dumps({"code": 0, "data": None})
+
+
+@pytest.mark.asyncio
+async def test_uid_snapshot_fills_missing_room_id(tmp_path):
+    """批量接口没给 room_id 时用 getRoomInfoOld 兜底，链接不能退回 live/<UID>。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == BATCH_PATH:
+            return httpx.Response(200, json={"code": 0, "data": {"42": {"uid": 42, "uname": "主播"}}})
+        if request.url.path.endswith("/getRoomInfoOld"):
+            return httpx.Response(200, json={"code": 0, "data": {"roomid": 100, "short_id": 7}})
+        return httpx.Response(404, json={"code": -404})
+
+    client = make_client(tmp_path, handler)
+    room = await client.resolve("https://space.bilibili.com/42")
+    assert (room.uid, room.room_id, room.short_id) == (42, 100, 7)
+    assert room.url == "https://live.bilibili.com/100"
+    await client.aclose()

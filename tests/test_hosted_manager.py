@@ -251,3 +251,31 @@ async def test_status_falls_back_to_container_log_for_token(tmp_path, monkeypatc
     status = await mgr.hosted_manager.status(bot_id, host="127.0.0.1")
     assert status["webui"]["token"] == "logtok-987654"
     assert status["webui"]["source"] == "logs"
+
+
+@pytest.mark.asyncio
+async def test_public_webui_url_global_then_per_bot(tmp_path, monkeypatch):
+    """公网地址：全局默认 + NapCat 的 /webui 路径；逐容器覆盖优先，清空后回落全局。"""
+    from livepush.appconfig import load_app_config, save_app_config
+
+    bot_id, _ = await setup(tmp_path, monkeypatch)
+    job = mgr.hosted_manager.install(bot_id)
+    await wait_job(job)
+
+    async with session_scope() as session:
+        config = await load_app_config(session)
+        config.hosted_webui_public_base = "https://qq.dgnra.net/"  # 末尾斜杠应被清掉
+        await save_app_config(session, config)
+
+    assert await mgr.hosted_manager.public_webui_url(bot_id) == "https://qq.dgnra.net/webui"
+
+    # 逐容器覆盖，且已带 /webui 时不重复拼
+    assert (
+        await mgr.hosted_manager.set_public_url(bot_id, "https://a.example/webui")
+        == "https://a.example/webui"
+    )
+    # 清空 → 回落到全局默认
+    assert await mgr.hosted_manager.set_public_url(bot_id, "") == "https://qq.dgnra.net/webui"
+
+    status = await mgr.hosted_manager.status(bot_id)
+    assert status["webui_public_url"] == "https://qq.dgnra.net/webui"

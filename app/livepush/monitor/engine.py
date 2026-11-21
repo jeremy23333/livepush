@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -52,6 +53,8 @@ class MonitorEngine:
             return
         self._stop.clear()
         await self._ensure_bili(self.config)
+        with contextlib.suppress(Exception):
+            await self.backfill_room_ids()
         self._task = asyncio.create_task(self._loop(), name="livepush-monitor")
         log.info("监控引擎已启动")
 
@@ -103,6 +106,54 @@ class MonitorEngine:
                 pass
             if self._stop.is_set():
                 return
+
+    async def backfill_room_ids(self) -> int:
+        """给历史数据里 `room_id == 0` 的直播间补房间号。
+
+        这类行会让推送链接退化成空间页（以前更糟：伪造 `live/<uid>`）。先批量接口补，
+        批量没给的再逐个用 `getRoomInfoOld` 补；失败只记日志，绝不阻塞启动。
+        """
+        if self.bili is None:
+            return 0
+        async with session_scope() as session:
+            rows = (
+                await session.execute(select(LiveRoom).where(LiveRoom.room_id == 0))
+            ).scalars().all()
+            targets = [(row.id, row.uid) for row in rows if row.uid]
+        if not targets:
+            return 0
+
+        uids = [uid for _, uid in targets]
+        try:
+            snaps = await self.bili.get_status_by_uids(uids, chunk_size=50, chunk_delay=0.3)
+        except BiliError as exc:
+            log.warning("补全房间号：批量查询失败（改用逐个查询）：%s", exc)
+            snaps = {}
+
+        found: dict[int, tuple[int, int]] = {}
+        for room_pk, uid in targets:
+            snap = snaps.get(uid)
+            room_id = snap.room_id if snap else 0
+            short_id = snap.short_id if snap else 0
+            if not room_id:
+                with contextlib.suppress(BiliError):
+                    room_id, short_id = await self.bili.room_id_by_uid(uid)
+                    await asyncio.sleep(0.3)  # 逐个补全时放慢，避免触发风控
+            if room_id:
+                found[room_pk] = (room_id, short_id)
+
+        if not found:
+            return 0
+        async with session_scope() as session:
+            for room_pk, (room_id, short_id) in found.items():
+                row = await session.get(LiveRoom, room_pk)
+                if row is None:
+                    continue
+                row.room_id = row.room_id or room_id
+                row.short_id = row.short_id or short_id
+                row.updated_at = now_ts()
+        log.info("已补全 %s 个直播间的房间号", len(found))
+        return len(found)
 
     async def _ensure_bili(self, config: AppConfig) -> None:
         signature = (config.bili_cookie, config.bili_proxy)

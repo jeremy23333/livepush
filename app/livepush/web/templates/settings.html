@@ -52,6 +52,18 @@
 </div>
 
 <div class="panel">
+  <h2>托管协议端 WebUI</h2>
+  <label class="field"><span>公网地址（默认值，可被单条连接的设置覆盖）</span>
+    <input data-cfg="hosted_webui_public_base" placeholder="https://qq.example.com">
+  </label>
+  <p class="hint">
+    填 Cloudflare Tunnel 绑定到 WebUI 端口的域名，例如 <code>https://qq.example.com</code>；
+    「带令牌打开」会跳到 <code>https://qq.example.com/webui?token=…</code>。
+    多条托管连接端口不同时，请在 QQ 页「托管」弹窗里逐条设置。
+  </p>
+</div>
+
+<div class="panel">
   <h2>B 站访问</h2>
   <label class="field"><span>Cookie（SESSDATA，可选，能显著降低风控概率）</span><input data-cfg="bili_cookie" placeholder="SESSDATA=xxx; bili_jct=xxx"></label>
   <label class="field"><span>代理（可选，如 http://127.0.0.1:7890）</span><input data-cfg="bili_proxy"></label>

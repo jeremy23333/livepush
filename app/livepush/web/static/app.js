@@ -362,6 +362,7 @@ pages.rooms = async () => {
       const d = await LP.api('/api/rooms/resolve', { method: 'POST', body: { query } });
       const r = d.room;
       pending = r;
+      r.query = query;  // 确认添加时用「原始输入」而不是 UID，避免二次解析跑偏
       preview.hidden = false;
       const amb = r.ambiguous ? `<div class="warn-box">
         数字 ${r.input_number} 同时是 UID ${r.input_number}（${LP.esc(r.ambiguous.uname || '?')}，房间 ${r.ambiguous.room_id}）。
@@ -386,7 +387,11 @@ pages.rooms = async () => {
         try {
           await LP.api('/api/rooms', {
             method: 'POST',
-            body: { query: String(pending.uid), notify_on_add: document.getElementById('add-notify').checked },
+            body: {
+              query: pending.query || String(pending.uid),
+              expected_uid: pending.uid,
+              notify_on_add: document.getElementById('add-notify').checked,
+            },
           });
           LP.toast('已添加', 'ok');
           preview.hidden = true;
@@ -820,6 +825,9 @@ pages.settings = async () => {
 
 /* ------------------------------------------------------------------ QQ 连接 */
 pages.qq = async () => {
+  // 这个页面必须有 QQ 表单；托管 WebUI 等页面也用 base.html，但 #b-mode 不存在，
+  // 以前会在这里 addEventListener(null) 抛「Cannot read properties of null」。
+  if (!document.getElementById('b-mode')) return;
   const box = document.getElementById('bots');
   const modeSel = document.getElementById('b-mode');
   const transportSel = document.getElementById('b-transport');
@@ -949,7 +957,9 @@ pages.qq = async () => {
 
   const webuiBox = (s) => {
     const info = s.webui || {};
-    const href = s.webui_url || '';
+    const local = s.webui_url || '';
+    const pub = s.webui_public_url || '';
+    const href = pub || local;
     if (info.token) {
       const url = href ? `${href}${href.includes('?') ? '&' : '?'}token=${encodeURIComponent(info.token)}` : '';
       const source = { config: '读自配置文件', exec: '读自容器内', logs: '读自启动日志' }[info.source] || '';
@@ -1003,8 +1013,16 @@ pages.qq = async () => {
             <div><div class="small muted">镜像</div><div class="mono small">${LP.esc(s.image_ref || '-')}</div></div>
             <div><div class="small muted">工作目录</div><div class="mono small">${LP.esc(s.install_dir || '-')}</div></div>
           </div>
-          ${s.webui_url ? `<p>WebUI：<a href="${s.webui_url}" target="_blank" rel="noreferrer">${LP.esc(s.webui_url)}</a>　·　<a href="/hosted/${botId}" target="_blank" rel="noreferrer">在 livepush 内打开</a></p>` : ''}
+          ${s.webui_url ? `<p>WebUI（内网）：<a href="${s.webui_url}" target="_blank" rel="noreferrer">${LP.esc(s.webui_url)}</a>　·　<a href="/hosted/${botId}" target="_blank" rel="noreferrer">在 livepush 内打开</a></p>` : ''}
+          ${s.webui_public_url ? `<p>WebUI（公网）：<a href="${s.webui_public_url}" target="_blank" rel="noreferrer">${LP.esc(s.webui_public_url)}</a></p>` : ''}
           ${webuiBox(s)}
+          <div class="card">
+            <div class="small muted">WebUI 公网地址（Cloudflare Tunnel 绑定的域名，例如 https://qq.example.com；留空表示只用上面的内网/内嵌地址）</div>
+            <div class="row" style="margin-top:6px">
+              <input id="hosted-public-url" placeholder="https://qq.example.com" value="${LP.esc(s.webui_public_url || '')}" style="flex:1">
+              <button class="small" id="btn-hosted-save-public">保存</button>
+            </div>
+          </div>
           ${s.remote_url ? `<p>远程桌面：<a href="${s.remote_url}" target="_blank" rel="noreferrer">${LP.esc(s.remote_url)}</a></p>` : ''}
           <p class="small muted">OneBot WS：<span class="mono">${LP.esc(s.ws_url || '-')}</span>　Token：<span class="mono">${LP.esc(s.token || '-')}</span></p>
           <div id="hosted-progress">${job && !job.done ? `<div class="card"><div class="small">${LP.esc(job.message)} ${job.total ? pct + '%' : ''}</div></div>` : ''}</div>
@@ -1023,6 +1041,15 @@ pages.qq = async () => {
           <pre class="log" id="hosted-log" hidden>${LP.esc(s.log_tail || '')}</pre>`;
       }
       on('btn-hosted-refresh', () => render());
+      on('btn-hosted-save-public', async () => {
+        const input = node.querySelector('#hosted-public-url');
+        const url = input ? input.value.trim() : '';
+        try {
+          await LP.api(`/api/hosted/${botId}/public-url`, { method: 'POST', body: { url } });
+          LP.toast(url ? '公网地址已保存' : '已清除公网地址', 'ok');
+          await render();
+        } catch (e) { /* toast 已提示 */ }
+      });
       on('btn-copy-webui-token', async () => {
         const token = (s.webui && s.webui.token) || '';
         if (!token) return;
@@ -1107,6 +1134,9 @@ pages.qq = async () => {
   document.getElementById('btn-refresh').addEventListener('click', load);
   await load();
 };
+
+/* ------------------------------------------------------------------ 托管协议端 WebUI（独立页面，无脚本） */
+pages.hosted = async () => {};
 
 /* ------------------------------------------------------------------ 启动 */
 document.addEventListener('DOMContentLoaded', () => {

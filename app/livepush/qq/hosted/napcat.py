@@ -102,6 +102,7 @@ class NapCatBackend(HostedBackend):
     http_container_port = 3000
     webui_container_port = 6099
     login_kind = "qr"
+    webui_path = "/webui"
     supports_native = True
 
     def artifact(self) -> Artifact:

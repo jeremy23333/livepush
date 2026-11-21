@@ -18,6 +18,19 @@ from .models import AppSetting
 SETTING_KEY = "app_config"
 
 
+def clean_base_url(value: str) -> str:
+    """规范化「WebUI 公网地址」：只留 scheme+host[:port][/path]，去掉尾部斜杠。
+
+    空串表示不启用；非法值（不是 http/https）一律当空串，避免把奇怪的字符串拼进链接。
+    """
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if not text.lower().startswith(("http://", "https://")):
+        return ""
+    return text.rstrip("/")
+
+
 @dataclass
 class AppConfig:
     # 轮询
@@ -44,6 +57,9 @@ class AppConfig:
     # B 站
     bili_cookie: str = ""
     bili_proxy: str = ""
+
+    # 托管协议端 WebUI 的公网地址（经 Cloudflare Tunnel 等），如 https://qq.example.com
+    hosted_webui_public_base: str = ""
 
     # 日志保留
     log_retention_days: int = 14  # 0 = 不自动删除
@@ -94,6 +110,7 @@ class AppConfig:
         self.bot_health_interval_sec = max(10, min(int(self.bot_health_interval_sec), 300))
         self.bot_offline_grace_sec = max(30, min(int(self.bot_offline_grace_sec), 3600))
         self.bot_good_fail_threshold = max(1, min(int(self.bot_good_fail_threshold), 10))
+        self.hosted_webui_public_base = clean_base_url(self.hosted_webui_public_base)
         return self
 
     def interval_for(self, any_live: bool, hour: int) -> int:

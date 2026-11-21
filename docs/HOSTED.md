@@ -75,6 +75,23 @@ data/hosted/napcat-3/
 
 这些容器端口是镜像内的约定，宿主机侧用随机高位端口映射，不会跟别的服务抢 3000/3001。
 
+## 经 Cloudflare Tunnel 访问 WebUI
+
+容器只监听 `127.0.0.1`，所以公网访问要靠隧道或反向代理。推荐把**某一条连接的 WebUI 端口**单独绑一个域名，例如：
+
+```
+qq.dgnra.net  ->  http://127.0.0.1:30002   # 这条连接的 webui 端口
+```
+
+配置好之后，在 livepush 里填这个域名，之后「带令牌打开」就会跳到 `https://qq.dgnra.net/webui?token=…`（NapCat 的路径是 `/webui`；SnowLuma 是根路径）。
+
+- **全局默认**：设置 → 「托管协议端 WebUI」→ 公网地址，例如 `https://qq.dgnra.net`；
+- **单条覆盖**：QQ 页 → 该连接的「托管」弹窗 → 「WebUI 公网地址」（多条连接端口不同时用这个，优先级更高）；
+- 地址只允许 `http://` / `https://`；末尾斜杠会自动去掉；已带 `/webui` 就不重复拼；
+- 内嵌页 `/hosted/<id>` 仍然走 livepush 自己的同源代理，不需要公网地址；公网地址只影响「带令牌打开」「在新标签打开」这类外链。
+
+> Cloudflare 侧注意：WebSocket 要允许（NapCat WebUI 用了 WS），并且该域名不要加需要交互验证的 Access 策略，否则 iframe/WS 会失败。
+
 ## 镜像来源与校验
 
 | 后端 | 产物 | 大小 | sha256（前 8 位） |

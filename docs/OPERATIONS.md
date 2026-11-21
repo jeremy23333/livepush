@@ -202,3 +202,16 @@ B 站允许「直播间号」和「UID」是**同一个数字**，例如 `226372
    ```
    每条响应都会带 `X-Livepush-Elapsed: 123ms` 头，Cloudflare 的超时通常在日志里表现为「没有这条请求」。
 5. 如果服务器在墙内直连 B 站不稳：设置页填 `bili_proxy`（如 `http://127.0.0.1:7890`）。客户端已改为 `trust_env=False`，**不会**被系统 `HTTP_PROXY` 环境影响，只用你填的代理。
+
+### 6.3 2.1.2：链接不会再拼成 `live.bilibili.com/<UID>`
+
+2.1.1 还有一个坑：添加时前端把**UID** 又发回后端二次解析，如果批量接口那一次没带 `room_id`，入库的 `room_id` 就是 0，而链接生成是 `room_id or short_id or uid` 拼 `live.bilibili.com/<数字>` —— 结果就成了 `live.bilibili.com/<UID>`（指向一个不存在的直播页）。
+
+现在的规则：
+
+- 链接三段回退：**房间号** → `live.bilibili.com/<room_id>`；**短号** → `live.bilibili.com/<short_id>`；**都没有** → `space.bilibili.com/<uid>`（不会再伪造直播页）；
+- 添加时前端发**原始输入** + `expected_uid`，后端解析后 UID 对不上直接 `409`（防止把别的直播间加进来）；
+- 解析没拿到 `room_id` 时再兜一次 `/room/v1/Room/getRoomInfoOld?mid=<uid>`；
+- 服务启动时 `backfill_room_ids()` 会把历史 `room_id == 0` 的行补全（先批量、再逐个，带节流）。
+
+所以升级到 2.1.2 后：之前加错的条目**需要删掉重加**（旧行里的 uid/room_id 本身就是错的，程序无法判断哪条是错的）；只错在「链接」而 uid/room_id 正确的行会被自动补链。

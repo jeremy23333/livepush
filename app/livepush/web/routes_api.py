@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import socket
@@ -75,7 +76,7 @@ def _room(room: LiveRoom, bind_count: int = 0) -> dict:
         "enabled": room.enabled,
         "notify_on_add": room.notify_on_add,
         "note": room.note,
-        "url": f"https://live.bilibili.com/{room.room_id or room.short_id or room.uid}",
+        "url": room.url,
         "bindings": bind_count,
     }
 
@@ -242,6 +243,8 @@ class RoomCreateBody(BaseModel):
     query: str
     notify_on_add: bool = False
     note: str = ""
+    # 预览时解析出的 UID：用于发现「确认时二次解析结果与预览不一致」的情况
+    expected_uid: int = 0
 
 
 class RoomPatchBody(BaseModel):
@@ -355,6 +358,21 @@ async def api_rooms_create(body: RoomCreateBody) -> dict:
     except BiliError as exc:
         _log_bili_error("添加直播间", body.query, exc)
         raise HTTPException(502, _bili_detail(exc, time.perf_counter() - started)) from exc
+
+    if body.expected_uid and resolved.uid != body.expected_uid:
+        raise HTTPException(
+            409,
+            f"解析结果与预览不一致（预览 UID {body.expected_uid}，现在 UID {resolved.uid}）；"
+            "请重新解析确认，避免把别的直播间加进来",
+        )
+    if not resolved.room_id:
+        # 二次解析没拿到房间号时再兜一次；仍然没有就允许落库，但 URL 会退回空间链接。
+        with contextlib.suppress(BiliError):
+            room_id, short_id = await client.room_id_by_uid(resolved.uid)
+            resolved.room_id = resolved.room_id or room_id
+            resolved.short_id = resolved.short_id or short_id
+        if not resolved.room_id:
+            log.warning("添加直播间 %s 没取到房间号，链接将退回空间页", resolved.uid)
 
     async with session_scope() as session:
         exists = (
@@ -1167,6 +1185,20 @@ class HostedAttachBody(BaseModel):
     token: str = ""
 
 
+class HostedPublicUrlBody(BaseModel):
+    url: str = ""
+
+
+@router.post("/hosted/{bot_id}/public-url")
+async def api_hosted_public_url(bot_id: int, body: HostedPublicUrlBody) -> dict:
+    """设置这条托管连接 WebUI 的公网地址（如 https://qq.example.com）。"""
+    try:
+        url = await hosted_manager.set_public_url(bot_id, body.url)
+    except HostedError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "webui_public_url": url}
+
+
 @router.post("/hosted/{bot_id}/attach")
 async def api_hosted_attach(bot_id: int, body: HostedAttachBody) -> dict:
     try:
@@ -1394,7 +1426,7 @@ async def api_binding_test_push(binding_id: int, body: BindingTestPushBody) -> d
         uname=room.uname or "",
         title=room.title or "",
         area=f"{room.area_parent} / {room.area_name}".strip(" /"),
-        url=f"https://live.bilibili.com/{room.room_id or room.short_id or room.uid}",
+        url=room.url,
         duration=duration if kind == "live_off" else 0,
         live_started_at=started,
         room_id=room.room_id or 0,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import secrets
 import socket
@@ -22,6 +23,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from ...appconfig import clean_base_url, get_setting, load_app_config, set_setting
 from ...config import runtime
 from ...db import session_scope
 from ...models import BotConnection, HostedEngine, now_ts
@@ -48,6 +50,10 @@ BACKENDS: dict[str, HostedBackend] = {
 PORT_START = 30000
 PORT_SPAN = 4000
 PORTS_PER_INSTANCE = 4
+
+# 逐容器的 WebUI 公网地址，存 app_setting（JSON：{"<bot_id>": "https://..."}）。
+# 不放进 hosted_engine 表，是为了避免给 SQLite 加列（本项目没有迁移框架）。
+PUBLIC_SETTING_KEY = "hosted_webui_public"
 
 
 class HostedError(RuntimeError):
@@ -471,6 +477,61 @@ class HostedManager:
             await registry.manager.stop(bot_id)
         return {"state": "removed"}
 
+    # -------------------------------------------------- WebUI 公网地址（Cloudflare Tunnel 等）
+    async def _public_override(self, bot_id: int) -> str:
+        async with session_scope() as session:
+            raw = await get_setting(session, PUBLIC_SETTING_KEY, "")
+        if not raw:
+            return ""
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        return clean_base_url(str(data.get(str(bot_id)) or ""))
+
+    async def public_webui_url(self, bot_id: int) -> str:
+        """「带令牌打开」用的公网 WebUI 地址；空串表示没配置（退回内嵌/局域网地址）。
+
+        优先逐容器覆盖，其次设置页里的全局默认；base 已带路径就原样用，否则补后端路径
+        （NapCat 是 `/webui`，SnowLuma 是根路径）。
+        """
+        engine = await self._load_engine(bot_id)
+        if engine is None:
+            return ""
+        base = await self._public_override(bot_id)
+        if not base:
+            async with session_scope() as session:
+                config = await load_app_config(session)
+            base = clean_base_url(config.hosted_webui_public_base)
+        if not base:
+            return ""
+        backend = BACKENDS.get(engine["backend"])
+        path = getattr(backend, "webui_path", "") if backend else ""
+        if path and not base.endswith(path):
+            base = base + path
+        return base
+
+    async def set_public_url(self, bot_id: int, url: str) -> str:
+        """保存/清除某条托管连接的公网地址，返回规范化后实际生效的地址。"""
+        clean = clean_base_url(url)
+        async with session_scope() as session:
+            raw = await get_setting(session, PUBLIC_SETTING_KEY, "")
+            try:
+                data = json.loads(raw) if raw else {}
+            except (ValueError, TypeError):
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            key = str(bot_id)
+            if clean:
+                data[key] = clean
+            else:
+                data.pop(key, None)
+            await set_setting(session, PUBLIC_SETTING_KEY, json.dumps(data, ensure_ascii=False))
+        return await self.public_webui_url(bot_id)
+
     async def status(self, bot_id: int, host: str = "127.0.0.1") -> dict[str, Any]:
         engine = await self._load_engine(bot_id)
         if engine is None:
@@ -509,6 +570,7 @@ class HostedManager:
             "ports": {"ws": ports.ws, "http": ports.http, "webui": ports.webui, "remote": ports.remote},
             "ws_url": f"ws://{host}:{ports.ws}" if ports.ws else "",
             "webui_url": backend.webui_url(host, ports.webui) if backend else "",
+            "webui_public_url": await self.public_webui_url(bot_id),
             "remote_url": backend.remote_url(host, ports.remote) if backend else "",
             "webui": webui.to_dict(),
             "token": engine["token"],

@@ -77,7 +77,12 @@ class RoomSnapshot:
 
     @property
     def url(self) -> str:
-        return f"https://live.bilibili.com/{self.display_room_id}"
+        """直播间链接；**没有房间号时宁可用空间链接，也不要伪造 live/<uid>**。"""
+        if self.room_id:
+            return f"https://live.bilibili.com/{self.room_id}"
+        if self.short_id:
+            return f"https://live.bilibili.com/{self.short_id}"
+        return f"https://space.bilibili.com/{self.uid}" if self.uid else ""
 
 
 def parse_status_item(uid: int, raw: dict) -> RoomSnapshot | None:

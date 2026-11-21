@@ -81,10 +81,15 @@ async def page_hosted_ui(request: Request, bot_id: int):
     from ..qq.hosted import hosted_manager
 
     webui: dict = {"token": "", "source": "", "port": 0}
+    public_url = ""
     with contextlib.suppress(Exception):
         webui = await hosted_manager.webui_token(bot_id)
+    with contextlib.suppress(Exception):
+        public_url = await hosted_manager.public_webui_url(bot_id)
     return templates.TemplateResponse(
         request,
         "hosted_ui.html",
-        {"active": "qq", "bot_id": bot_id, "webui": webui},
+        # active 必须是独立的页面名：传 "qq" 会让 app.js 在托管页跑 QQ 页逻辑，
+        # #b-mode 不存在 → addEventListener of null，就是「打不开 WebUI」的报错来源。
+        {"active": "hosted", "bot_id": bot_id, "webui": webui, "public_url": public_url},
     )

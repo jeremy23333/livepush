@@ -81,6 +81,8 @@ class HostedBackend(ABC):
     supports_native: bool = False
     # 登录方式：qr=出二维码 / internal=在它自己的界面里登录
     login_kind: str = "qr"
+    # WebUI 在站点根路径下的相对路径（拼公网地址用）：NapCat 是 "/webui"
+    webui_path: str = ""
 
     @abstractmethod
     def artifact(self) -> Artifact:

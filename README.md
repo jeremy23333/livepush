@@ -143,6 +143,7 @@ bash scripts/bootstrap.sh --with-sign
 - **掉线探测**：QQ 被风控踢下线（WS 还连着）时，靠 `get_login_info` 真实往返、心跳 `good`、下线 notice、容器日志关键词综合判断，超过宽限期才告警。
 - **添加直播间报 502**：B 站允许「房间号」和「UID」是同一个数字，旧版会把 `live.bilibili.com/<n>` 当 UID 查；2.1.1 起输入会先定型（`space.` → UID、`live.` → 房间号、裸数字先房间号后 UID），页面显示「识别为：直播间号 / 短号 / UID」。仍失败时跑 `python -m livepush bili "<房间号或链接>"` 逐层定位；详见 [`docs/OPERATIONS.md`](docs/OPERATIONS.md#6-502--添加直播间失败怎么查)。
 - **内嵌 WebUI**：托管模式的 NapCat WebUI 可在 livepush 内打开（`/hosted/<bot_id>`），不需要再加端口或隧道路由；令牌会在「托管」弹窗里显示，可一键复制或带令牌打开。
+- **WebUI 公网地址**：如果 WebUI 通过 Cloudflare Tunnel 暴露成 `https://qq.example.com`，在设置页（或单条连接的「托管」弹窗）填这个地址，「带令牌打开」就会跳到 `https://qq.example.com/webui?token=…`。
 
 ---
 

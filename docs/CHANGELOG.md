@@ -1,5 +1,26 @@
 # 变更记录
 
+## 2.1.2（2026-11-21）
+
+主题：修掉「添加直播间存成 `live.bilibili.com/<UID>`」与「内嵌 WebUI 打不开」，并支持把托管 WebUI 换成 Cloudflare Tunnel 的公网地址。
+
+### 修复
+
+- **添加直播间链接变成 `live.bilibili.com/<UID>`**：前端确认时把 **UID** 发回后端二次解析，一旦那一次没拿到 `room_id`，链接生成 `room_id or short_id or uid` 就会拼出指向主播空间的直播页。现在：
+  - 前端发**原始输入**，并带 `expected_uid`；后端解析后 UID 与预览不一致直接 `409`；
+  - 后端拿到不到 `room_id` 时再兜底 `/room/v1/Room/getRoomInfoOld?mid=<uid>`；
+  - `RoomSnapshot.url` / `ResolvedRoom.url` / `LiveRoom.url` 统一三段回退：房间号 → 短号 → `space.bilibili.com/<uid>`；
+  - 启动时 `backfill_room_ids()` 自动补全历史 `room_id == 0` 的行（批量优先、逐个兜底、节流）。
+- **在 livepush 内打开 NapCat WebUI 报 `Cannot read properties of null (reading 'addEventListener')`**：托管页复用了 `active="qq"`，`app.js` 在缺少 `#b-mode` 的页面上跑 QQ 页逻辑。现在托管页有独立的 `active="hosted"` 与空 `pages.hosted`，QQ 页脚本也会先检查元素存在。
+
+### 新增
+
+- **托管 WebUI 公网地址**：设置页新增全局 `hosted_webui_public_base`；每条托管连接可在「托管」弹窗里单独设置（存 `app_setting` 的 `hosted_webui_public`，不改表结构）。设置后「带令牌打开」跳到 `https://<你的域名>/webui?token=…`；NapCat 自动补 `/webui`，SnowLuma 用根路径；内嵌页「在新标签打开」也优先用公网地址。接口 `POST /api/hosted/{bot_id}/public-url`。
+
+### 测试
+
+- 新增 `tests/test_room_url.py`（三段回退）、`getRoomInfoOld` 兜底用例、`expected_uid` 409 / 公网地址端点 / 托管页 `data-page="hosted"` 用例；全量 **175 passed**。
+
 ## 2.1.1（2026-11-20）
 
 主题：**修掉「添加直播间 502」的真根因**（输入被当成 UID），并补上企微测试告警与 NapCat WebUI 令牌的可操作性。

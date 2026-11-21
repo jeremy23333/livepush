@@ -231,3 +231,118 @@ def test_alerts_state_and_test_without_config(client: TestClient):
     result = client.post("/api/alerts/test", headers=headers).json()
     assert result["ok"] is False
     assert "webhook" in result["error"]
+
+
+# ---------------------------------------------------------------- 添加直播间 / 托管 WebUI
+
+
+class _FakeBili:
+    """只实现 resolve / room_id_by_uid 的采集客户端替身。"""
+
+    def __init__(self, room, room_id_fallback: tuple[int, int] = (0, 0)) -> None:
+        self.room = room
+        self.room_id_fallback = room_id_fallback
+
+    async def resolve(self, query: str):
+        return self.room
+
+    async def room_id_by_uid(self, uid: int) -> tuple[int, int]:
+        return self.room_id_fallback
+
+    async def get_status_by_uids(self, *args, **kwargs):
+        # 采集循环可能在后台 tick 一次；返回空快照即可，不碰网络
+        return {}
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_add_room_keeps_previewed_room_id(client: TestClient, monkeypatch):
+    from livepush.bili.client import ResolvedRoom
+    from livepush.state import get_engine
+
+    login(client)
+    engine = get_engine()
+    monkeypatch.setattr(
+        engine, "bili", _FakeBili(ResolvedRoom(uid=672328094, room_id=22637261, uname="嘉然今天吃什么"))
+    )
+
+    resp = client.post(
+        "/api/rooms",
+        headers={"X-LP": "1"},
+        json={"query": "https://live.bilibili.com/22637261", "expected_uid": 672328094},
+    )
+    assert resp.status_code == 200, resp.text
+    room = resp.json()["room"]
+    assert room["room_id"] == 22637261
+    assert room["url"] == "https://live.bilibili.com/22637261"
+
+
+def test_add_room_rejects_uid_mismatch(client: TestClient, monkeypatch):
+    from livepush.bili.client import ResolvedRoom
+    from livepush.state import get_engine
+
+    login(client)
+    engine = get_engine()
+    monkeypatch.setattr(engine, "bili", _FakeBili(ResolvedRoom(uid=99, room_id=5, uname="别人")))
+
+    resp = client.post(
+        "/api/rooms",
+        headers={"X-LP": "1"},
+        json={"query": "https://live.bilibili.com/42", "expected_uid": 42},
+    )
+    assert resp.status_code == 409
+    assert "不一致" in resp.json()["detail"]
+
+
+def test_add_room_falls_back_to_room_id_by_uid(client: TestClient, monkeypatch):
+    from livepush.bili.client import ResolvedRoom
+    from livepush.state import get_engine
+
+    login(client)
+    engine = get_engine()
+    monkeypatch.setattr(
+        engine, "bili", _FakeBili(ResolvedRoom(uid=42, uname="主播"), room_id_fallback=(100, 7))
+    )
+
+    resp = client.post("/api/rooms", headers={"X-LP": "1"}, json={"query": "42", "expected_uid": 42})
+    assert resp.status_code == 200, resp.text
+    room = resp.json()["room"]
+    assert (room["room_id"], room["short_id"]) == (100, 7)
+    assert room["url"] == "https://live.bilibili.com/100"
+
+
+def test_hosted_page_uses_its_own_page_key(client: TestClient):
+    login(client)
+    resp = client.get("/hosted/1")
+    assert resp.status_code == 200
+    # 传 active="qq" 会让 app.js 在托管页跑 QQ 页逻辑并抛 addEventListener of null
+    assert 'data-page="hosted"' in resp.text
+
+
+def test_hosted_public_url_requires_auth_and_csrf(client: TestClient):
+    assert client.post("/api/hosted/1/public-url", json={"url": ""}).status_code == 401
+    login(client)
+    assert client.post("/api/hosted/1/public-url", json={"url": ""}).status_code == 403
+
+
+def test_hosted_public_url_saves(client: TestClient, monkeypatch):
+    from livepush.qq.hosted import hosted_manager
+
+    login(client)
+    saved: dict[str, object] = {}
+
+    async def fake_set(bot_id: int, url: str) -> str:
+        saved["args"] = (bot_id, url)
+        return "https://qq.dgnra.net/webui"
+
+    monkeypatch.setattr(hosted_manager, "set_public_url", fake_set)
+
+    resp = client.post(
+        "/api/hosted/7/public-url",
+        headers={"X-LP": "1"},
+        json={"url": "https://qq.dgnra.net"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["webui_public_url"] == "https://qq.dgnra.net/webui"
+    assert saved["args"] == (7, "https://qq.dgnra.net")

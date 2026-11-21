@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import socket
 import time
@@ -94,7 +95,21 @@ class ResolvedRoom:
 
     @property
     def url(self) -> str:
-        return f"https://live.bilibili.com/{self.display_room_id}"
+        """直播间链接；没有房间号时退回空间链接，绝不伪造 `live/<uid>`。"""
+        if self.room_id:
+            return f"https://live.bilibili.com/{self.room_id}"
+        if self.short_id:
+            return f"https://live.bilibili.com/{self.short_id}"
+        return f"https://space.bilibili.com/{self.uid}" if self.uid else ""
+
+
+def _as_room_id(value: object) -> int:
+    try:
+        if isinstance(value, bool):
+            return 0
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 def extract_id(text: str) -> int | None:
@@ -340,7 +355,29 @@ class BiliClient:
             info = await self.get_master_info(uid)
             who = f"（{info.get('uname')}）" if info.get("uname") else ""
             raise BiliNotFound(f"UID {uid}{who} 没有开通直播间", stage="uid")
+        # 批量接口偶尔不返回 room_id（返回 0/缺字段）。这时 room_id 落库成 0，
+        # 推送就会退化成 live/<uid> 的错链接——用老接口补一次，拿不到才认命。
+        if not snap.room_id and not snap.short_id:
+            with contextlib.suppress(BiliError):
+                room_id, short_id = await self.room_id_by_uid(uid)
+                snap.room_id = snap.room_id or room_id
+                snap.short_id = snap.short_id or short_id
         return snap
+
+    async def room_id_by_uid(self, uid: int) -> tuple[int, int]:
+        """用免登录旧接口把 UID 换成 (room_id, short_id)。
+
+        `getRoomInfoOld?mid=<uid>` 实测对「批量接口没给 room_id」的账号仍然可用：
+        uid 672328094 → 22637261，uid 50329118 → 7734200。
+        """
+        data = await self._get(
+            "/room/v1/Room/getRoomInfoOld",
+            params={"mid": uid},
+            stage="room_info_old",
+            timeout=6.0,
+            retries=0,
+        )
+        return _as_room_id(data.get("roomid") or data.get("room_id")), _as_room_id(data.get("short_id"))
 
     async def _other_uid_room(self, number: int, room_id: int) -> dict | None:
         """裸数字命中房间后，检查同一个数字是否还是**另一个** UP 主的 UID。"""

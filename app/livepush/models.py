@@ -69,8 +69,16 @@ class LiveRoom(Base):
 
     @property
     def url(self) -> str:
-        rid = self.room_id or self.short_id or self.uid
-        return f"https://live.bilibili.com/{rid}"
+        """推送里用的直播间链接。
+
+        没有房间号时退回空间链接：此前回退成 `live.bilibili.com/<uid>` 会让消息里
+        出现一个「看起来像直播间、其实是别人房间」的错链接。
+        """
+        if self.room_id:
+            return f"https://live.bilibili.com/{self.room_id}"
+        if self.short_id:
+            return f"https://live.bilibili.com/{self.short_id}"
+        return f"https://space.bilibili.com/{self.uid}" if self.uid else ""
 
 
 class BotConnection(Base):
