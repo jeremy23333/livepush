@@ -42,6 +42,8 @@ from ..qq.hosted import BACKENDS as HOSTED_BACKENDS
 from ..qq.hosted import HostedError, hosted_manager
 from ..qq.login import login_manager
 from ..qq.signer import check_sign, normalize_base
+from ..push import notice as notice_mod
+from ..push.notice import NoticeDraft, NoticeError
 from ..state import get_dispatcher, get_engine
 from ..util.timefmt import fmt_dt, fmt_duration
 from .auth import COOKIE_NAME, SESSION_TTL, issue_session, require_csrf, require_user, verify_password
@@ -641,6 +643,62 @@ async def api_room_events(room_id: int, limit: int = 30) -> dict:
             for e in rows
         ],
     }
+
+
+# --------------------------------------------------------------------------- 手动通知
+class NoticeBody(BaseModel):
+    text: str = ""
+    at_all: bool = False
+    include_cover: bool = True
+    # true 时只保存文案，不真的入队（前端「仅保存文案」）
+    dry_run: bool = False
+
+
+@router.get("/rooms/{room_id}/notice")
+async def api_room_notice(room_id: int) -> dict:
+    """返回上次保存的文案 + 当前会收到通知的目标列表。"""
+    try:
+        draft = await notice_mod.load_notice(room_id)
+        targets = await notice_mod.list_targets(room_id)
+    except NoticeError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {
+        "ok": True,
+        "room_id": room_id,
+        "text": draft.text,
+        "at_all": draft.at_all,
+        "include_cover": draft.include_cover,
+        "default_text": notice_mod.DEFAULT_TEXT,
+        "interval_sec": notice_mod.SEND_INTERVAL_SEC,
+        "targets": targets,
+    }
+
+
+@router.post("/rooms/{room_id}/notice")
+async def api_room_notice_send(room_id: int, body: NoticeBody) -> dict:
+    """保存文案并按队列向该直播间所有绑定的群/私聊发送。
+
+    多个目标时每条之间错开 ``SEND_INTERVAL_SEC`` 秒，派发器本身也是串行发送，
+    避免同一秒连发多条触发风控。
+    """
+    text = body.text.strip() or notice_mod.DEFAULT_TEXT
+    draft = NoticeDraft(text=text, at_all=body.at_all, include_cover=body.include_cover)
+    try:
+        if body.dry_run:
+            await notice_mod.save_notice(room_id, draft)
+            targets = await notice_mod.list_targets(room_id)
+            return {"ok": True, "saved": True, "targets": len(targets), "text": text}
+        result = await notice_mod.send_notice(room_id, draft)
+    except NoticeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    get_dispatcher().wake()
+    log.info(
+        "手动通知已入队 room=%s event=%s targets=%s",
+        room_id,
+        result.get("event_id"),
+        result.get("targets"),
+    )
+    return {"ok": True, "text": text, **result}
 
 
 # --------------------------------------------------------------------------- 推送目标

@@ -13,7 +13,16 @@ DEFAULT_TEMPLATES = {
     "live_off": "{uname} 下播了\n本次直播时长 {duration}",
     "title_change": "{uname} 直播间标题变更：{title}",
     "area_change": "{uname} 直播间分区变更：{area}",
+    # 手动通知（/rooms 页「通知」按钮）默认文案，占位符与开播推送一致
+    "manual": "{uname} 直播通知\n分区：{area}\n标题：{title}\n{url}",
 }
+
+# 允许用「自定义文案」渲染的事件类型：开播与手动通知
+OVERRIDE_KINDS = ("live_on", "manual")
+# 可以带封面图的事件类型：下播带图没有意义还会撑大消息
+COVER_KINDS = ("live_on", "title_change", "manual")
+# 可以 @全体的事件类型
+AT_ALL_KINDS = ("live_on", "manual")
 
 
 class _SafeDict(dict):
@@ -48,7 +57,7 @@ class RenderInput:
 
 
 def pick_template(kind: str, config: AppConfig, override: str = "") -> str:
-    if kind == "live_on" and override.strip():
+    if kind in OVERRIDE_KINDS and override.strip():
         return override
     return getattr(config, f"template_{kind}", "") or DEFAULT_TEMPLATES.get(kind, "{uname}")
 
@@ -75,10 +84,9 @@ def build_message(data: RenderInput, config: AppConfig, cover_uri: str | None) -
     )
 
     message = Message()
-    if data.at_all and data.kind == "live_on":
+    if data.at_all and data.kind in AT_ALL_KINDS:
         message.mention_all()
     message.text(text)
-    # 只在上播/标题变更时带封面；下播带图没有意义还会撑大消息
-    if cover_uri and data.include_cover and data.kind in ("live_on", "title_change"):
+    if cover_uri and data.include_cover and data.kind in COVER_KINDS:
         message.image(cover_uri)
     return message

@@ -346,3 +346,87 @@ def test_hosted_public_url_saves(client: TestClient, monkeypatch):
     assert resp.status_code == 200, resp.text
     assert resp.json()["webui_public_url"] == "https://qq.dgnra.net/webui"
     assert saved["args"] == (7, "https://qq.dgnra.net")
+
+
+# ---------------------------------------------------------------- 手动通知
+
+
+def _seed_room_for_notice(client: TestClient, *, with_binding: bool = True):
+    import sqlite3
+
+    from livepush.config import runtime
+
+    headers = {"X-LP": "1"}
+    bot_id = client.post(
+        "/api/bots",
+        headers=headers,
+        json={"transport": "onebot11", "mode": "external", "ws_url": "ws://127.0.0.1:1"},
+    ).json()["id"]
+    target_id = client.post(
+        "/api/targets",
+        headers=headers,
+        json={"bot_connection_id": bot_id, "kind": "group", "target_id": "123456", "name": "测试群"},
+    ).json()["target"]["id"]
+
+    conn = sqlite3.connect(runtime.settings.db_path)
+    conn.execute(
+        "INSERT INTO live_room (uid, room_id, short_id, uname, face, title, area_name, area_parent,"
+        " cover_url, live_status, live_started_at, pending_status, pending_count, room_state, fail_streak,"
+        " last_checked_at, last_ok_at, enabled, notify_on_add, note, created_at, updated_at)"
+        " VALUES (99, 1234, 0, '主播', '', '标题', '', '', '', 0, 0, NULL, 0, 'ok', 0, 0, 0, 1, 0, '', 0, 0)"
+    )
+    conn.commit()
+    room_id = conn.execute("SELECT id FROM live_room WHERE uid=99").fetchone()[0]
+    conn.close()
+
+    if with_binding:
+        resp = client.post(
+            "/api/bindings", headers=headers, json={"room_id": room_id, "target_id": target_id}
+        )
+        assert resp.status_code == 200, resp.text
+    return room_id, target_id
+
+
+def test_notice_endpoints_require_auth_and_csrf(client: TestClient):
+    assert client.get("/api/rooms/1/notice").status_code == 401
+    login(client)
+    assert client.post("/api/rooms/1/notice", json={"text": "hi"}).status_code == 403
+
+
+def test_notice_get_missing_room(client: TestClient):
+    login(client)
+    assert client.get("/api/rooms/999999/notice").status_code == 404
+
+
+def test_notice_dry_run_saves_text_and_lists_targets(client: TestClient):
+    login(client)
+    headers = {"X-LP": "1"}
+    room_id, _ = _seed_room_for_notice(client)
+
+    saved = client.post(
+        "/api/rooms/%s/notice" % room_id,
+        headers=headers,
+        json={"text": "{uname} 通知 {title}", "at_all": True, "include_cover": False, "dry_run": True},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["saved"] is True
+    assert saved.json()["targets"] == 1
+
+    detail = client.get(f"/api/rooms/{room_id}/notice").json()
+    assert detail["text"] == "{uname} 通知 {title}"
+    assert detail["at_all"] is True
+    assert detail["include_cover"] is False
+    assert len(detail["targets"]) == 1
+    assert detail["targets"][0]["kind_label"] == "群聊"
+    assert detail["interval_sec"] > 0
+
+
+def test_notice_send_without_binding_returns_400(client: TestClient):
+    login(client)
+    headers = {"X-LP": "1"}
+    room_id, _ = _seed_room_for_notice(client, with_binding=False)
+
+    resp = client.post("/api/rooms/%s/notice" % room_id, headers=headers, json={"text": "hi"})
+    assert resp.status_code == 400
+    assert "绑定" in resp.json()["detail"]
+

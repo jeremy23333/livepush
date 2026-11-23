@@ -292,11 +292,64 @@ pages.rooms = async () => {
         <td class="small muted">${LP.esc(r.last_checked_text)}</td>
         <td>${r.bindings}</td>
         <td class="right nowrap">
+          <button class="small" data-act="notice" data-id="${r.id}">通知</button>
           <button class="small" data-act="events" data-id="${r.id}">事件</button>
           <button class="small" data-act="toggle" data-id="${r.id}" data-enabled="${r.enabled ? 1 : 0}">${r.enabled ? '停用' : '启用'}</button>
           <button class="small danger" data-act="delete" data-id="${r.id}">删除</button>
         </td>
       </tr>`).join('')}</tbody></table>`;
+  };
+
+  const openNotice = async (id) => {
+    const d = await LP.api(`/api/rooms/${id}/notice`);
+    const targets = d.targets.length
+      ? `<ul class="small" style="margin:6px 0 0 18px">${d.targets.map((t) => `
+          <li>${LP.esc(t.kind_label)} · ${LP.esc(t.name || t.target_id)}
+            <span class="mono muted">${LP.esc(t.target_id)}</span></li>`).join('')}</ul>`
+      : '<div class="warn-box small">这个直播间还没有绑定任何目标，先去「绑定关系」页加一条。</div>';
+    const node = LP.el('div', {}, `
+      <p class="small muted">会发往这个直播间绑定的所有群聊 / 私聊。可用占位符与开播推送一致：
+        <code>{uname}</code> <code>{title}</code> <code>{area}</code> <code>{url}</code>
+        <code>{duration}</code> <code>{room_id}</code> <code>{uid}</code> <code>{live_started}</code></p>
+      <textarea id="notice-text" rows="7" style="width:100%;font-family:inherit">${LP.esc(d.text)}</textarea>
+      <div style="display:flex;gap:16px;margin-top:8px;align-items:center;flex-wrap:wrap">
+        <label><input type="checkbox" id="notice-at-all" ${d.at_all ? 'checked' : ''}> @全体成员（仅群聊生效）</label>
+        <label><input type="checkbox" id="notice-cover" ${d.include_cover ? 'checked' : ''}> 带封面图</label>
+      </div>
+      <div style="margin-top:10px"><strong>将发往 ${d.targets.length} 个目标</strong>
+        <span class="small muted">（按队列发送，每条间隔约 ${d.interval_sec} 秒，失败会自动重试）</span></div>
+      ${targets}`);
+    const read = () => ({
+      text: node.querySelector('#notice-text').value,
+      at_all: node.querySelector('#notice-at-all').checked,
+      include_cover: node.querySelector('#notice-cover').checked,
+    });
+    LP.modal('手动通知', node, [
+      {
+        label: '仅保存文案',
+        onClick: async () => {
+          try {
+            const r = await LP.api(`/api/rooms/${id}/notice`, { method: 'POST', body: { ...read(), dry_run: true } });
+            LP.toast(`文案已保存（当前 ${r.targets} 个目标）`, 'ok');
+            return false;
+          } catch (e) { return true; }
+        },
+      },
+      {
+        label: '发送',
+        cls: 'primary',
+        onClick: async () => {
+          const payload = read();
+          if (!payload.text.trim()) { LP.toast('文案不能为空', 'err'); return true; }
+          try {
+            const r = await LP.api(`/api/rooms/${id}/notice`, { method: 'POST', body: payload });
+            LP.toast(`已入队：${r.targets} 个目标，约 ${r.interval_sec} 秒/条`, 'ok');
+            return false;
+          } catch (e) { return true; }
+        },
+      },
+      { label: '取消' },
+    ]);
   };
 
   box.addEventListener('click', async (ev) => {
@@ -311,6 +364,8 @@ pages.rooms = async () => {
     } else if (btn.dataset.act === 'toggle') {
       await LP.api(`/api/rooms/${id}`, { method: 'PATCH', body: { enabled: btn.dataset.enabled !== '1' } });
       load();
+    } else if (btn.dataset.act === 'notice') {
+      await openNotice(id);
     } else if (btn.dataset.act === 'events') {
       const d = await LP.api(`/api/rooms/${id}/events`);
       const node = LP.el('div', {}, d.events.length ? `<table><thead><tr><th>时间</th><th>事件</th><th>时长</th></tr></thead><tbody>${

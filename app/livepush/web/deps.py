@@ -53,6 +53,7 @@ EVENT_LABELS = {
     "live_off": "下播",
     "title_change": "标题变更",
     "area_change": "分区变更",
+    "manual": "手动通知",
 }
 
 templates.env.globals.update(

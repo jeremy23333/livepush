@@ -1,5 +1,26 @@
 # 变更记录
 
+## 2.2.0（2026-11-23）
+
+主题：新增「按直播间手动通知」——从 `/rooms` 直接给该直播间绑定的所有群/私聊群发一条自定义消息。
+
+### 新增
+
+- **`/rooms` 页「通知」按钮**（在「事件」左侧）：弹窗里编辑文案、勾选 @全体 / 带封面，点「发送」即可向该直播间**当前绑定的所有目标**各发一条；「仅保存文案」可以只改不发送。
+- **文案持久化**：按直播间保存在 `app_setting` 的 `room_notice`（JSON），不新增表、老库无需迁移；下次打开弹窗自动带出上次的文案与勾选。
+- **占位符与开播推送一致**：`{uname}` `{title}` `{prev_title}` `{area}` `{url}` `{duration}` `{duration_sec}` `{live_started}` `{online}` `{room_id}` `{uid}`；默认文案类似开播推送。
+- **队列与限速**：每个目标生成一条 `push_job`，相邻目标 `next_attempt_at` 错开 2 秒；派发器串行发送并保留「每目标 1 秒、全局 0.2 秒」的限速，失败沿用 2s/5s/15s 重试与离线挂起。
+- **接口**：`GET /api/rooms/{id}/notice`（文案 + 将发往的目标列表 + 间隔）、`POST /api/rooms/{id}/notice`（`text` / `at_all` / `include_cover` / `dry_run`）。
+
+### 变更
+
+- `LiveEvent.kind = "manual"` 走与真实事件相同的渲染/派发链路；`EVENT_LABELS` 增加「手动通知」，`/logs` 与 `/rooms` 的「事件」历史都能看到。
+- 渲染层把「可自定义文案」「可带封面」「可 @全体」分别抽成 `OVERRIDE_KINDS` / `COVER_KINDS` / `AT_ALL_KINDS`，手动通知与开播同权。
+
+### 测试
+
+- 新增 `tests/test_notice.py`（入队间隔、目标过滤、文案持久化、渲染占位符、派发器实发）；`tests/test_web.py` 增加通知端点鉴权/CSRF/404/400 与「仅保存」用例。全量 **185 passed**。
+
 ## 2.1.2（2026-11-21）
 
 主题：修掉「添加直播间存成 `live.bilibili.com/<UID>`」与「内嵌 WebUI 打不开」，并支持把托管 WebUI 换成 Cloudflare Tunnel 的公网地址。

@@ -197,6 +197,12 @@ class Dispatcher:
             return False
 
         snapshot = ctx["snapshot"]
+        # 手动通知：@全体 / 带封面 / 文案都取事件快照里的（用户当次勾选），
+        # 不走绑定的默认值；其余事件仍由绑定决定。
+        manual = ctx["kind"] == "manual"
+        include_cover = bool(snapshot.get("include_cover", True)) if manual else ctx["include_cover"]
+        at_all = bool(snapshot.get("at_all", False)) if manual else ctx["at_all"]
+        template_override = (snapshot.get("text") or "") if manual else ctx["template_override"]
         data = RenderInput(
             kind=ctx["kind"],
             uname=snapshot.get("uname") or ctx["room_uname"],
@@ -208,13 +214,13 @@ class Dispatcher:
             online=int(snapshot.get("online") or 0),
             room_id=int(snapshot.get("room_id") or 0),
             uid=int(snapshot.get("uid") or 0),
-            include_cover=ctx["include_cover"],
-            at_all=ctx["at_all"],
-            template_override=ctx["template_override"],
+            include_cover=include_cover,
+            at_all=at_all,
+            template_override=template_override,
         )
 
         cover_uri = None
-        if self._config.cover_mode != "off" and ctx["include_cover"] and data.kind in ("live_on", "title_change"):
+        if self._config.cover_mode != "off" and include_cover and data.kind in ("live_on", "title_change", "manual"):
             cover_url = snapshot.get("cover_url") or ""
             if cover_url:
                 if self._config.cover_mode == "url":
